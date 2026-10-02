@@ -1,0 +1,41 @@
+server:
+  port: 8080                # 内嵌 Tomcat；手机/ApiFox 打 <PC局域网IP>:8080
+
+spring:
+  profiles:
+    include: local           # 真实 DB 口令在 application-local.yml（gitignore）——评分红线：真实口令不进 git
+  datasource:
+    url: jdbc:mysql://localhost:3306/spore_cms?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: CHANGE_ME      # 真实值只写在 application-local.yml
+  servlet:
+    multipart:
+      max-file-size: 10MB    # 题图上推
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss.SSS
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl   # 控制台 SQL 日志（实验报告截图要含 SQL 日志）
+  global-config:
+    banner: false
+    db-config:
+      logic-delete-field: deleted        # 六表统一逻辑删除列（日志/配置表无该列则不受影响）
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+      id-type: auto                      # 用户/角色/权限/日志自增；category/article 字符串 id 在实体上指定 INPUT
+  meta-object-handler: com.offblink.spore.config.MetaFillHandler   # update_time 自动填充（评分表三·数据自动填充）
+
+spore:
+  storage:
+    data-dir: ./data/attachments         # 「题库目录」：题图存这；设置页可改（handoff §2 迁移协议）
+  sync:
+    pull-interval-seconds: 30            # GUI 拉手机的节奏（手动刷新按钮随时触发）
+  jwt:
+    expire-hours: 720                    # 登录 token 有效期；签名密钥运行时随机生成，不写死
+
+logging:
+  file:
+    name: ./logs/spore-gui.log
