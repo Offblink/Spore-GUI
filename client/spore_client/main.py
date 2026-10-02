@@ -64,6 +64,11 @@ def main() -> int:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Spore.Desktop")
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
+    # MV3 品牌粉 + 浅色（design-brief §0）：MV3 options/review/drawer 均为纯浅色
+    # 设计，强制浅色避免深色导航配白卡的错配
+    from qfluentwidgets import Theme, setTheme, setThemeColor
+    setThemeColor("#ec4899")
+    setTheme(Theme.LIGHT)
     _install_excepthooks()
 
     # ---- 单例：listen 抢到名字 = 首实例；抢不到 = 已有实例，通知它唤醒、本进程退 ----

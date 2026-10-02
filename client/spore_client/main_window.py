@@ -1,6 +1,6 @@
-"""主窗口：三页签 FluentWindow（搜题记录 / 科目管理 / 设置）。
+"""主窗口：三页签 FluentWindow（搜题记录 / 日志 / 设置）。
 
-页内实现见 records.py / categories.py / settings.py；
+页内实现见 records.py / log_page.py / settings.py（MV3 options/review 同构）；
 截屏热键 Alt+S、回答面板 Alt+Z（与 MV3 drawer.js 同键位）挂在这里。
 """
 
@@ -19,10 +19,13 @@ from .answer.settings import load_from_env
 from .answer_window import AnswerWindow
 from .api import ApiClient
 from .capture import CaptureController, HotkeyManager
-from .categories import CategoriesPane
 from .log import get_logger
+from .log_page import LogPane
+from .mirror import write_turn
 from .records import RecordsPane
 from .settings import SettingsPane
+from .settings_store import apply_to_llm
+from .settings_store import read as read_ui_settings
 
 LOG = get_logger()
 
@@ -39,17 +42,19 @@ class MainWindow(FluentWindow):
         self.api = api
         self.setWindowTitle("Spore 搜题内容管理系统")
 
-        # LLM 配置先行：设置页要展示它
-        self.llm_settings = load_from_env()
+        # LLM 配置先行：环境变量为底，UI 设置文件补缺（env 显式设置者优先）
+        self.llm_settings = apply_to_llm(load_from_env())
         self._delta_counts: dict[str, int] = {}
         self._t_turn = time.monotonic()  # 回合计时，_on_captured 时重置
 
         self.records = RecordsPane(api)
-        self.categories = CategoriesPane(api)
+        self.log_page = LogPane()
         self.settings = SettingsPane(api, self.llm_settings)
 
+        # 三页对齐 MV3 options 左索引：搜题记录 / 日志 / 设置
+        # （原「科目管理」页已并入搜题记录页侧栏 —— 用户 2026-10-02 拍板）
         self.addSubInterface(self.records, FluentIcon.DOCUMENT, "搜题记录")
-        self.addSubInterface(self.categories, FluentIcon.FOLDER, "科目管理")
+        self.addSubInterface(self.log_page, FluentIcon.HISTORY, "日志")
         self.addSubInterface(self.settings, FluentIcon.SETTING, "设置")
         # 每页首次切入拉一次数据（lazy，失败不阻断）
         # 实测：本 flavor 的 FluentWindow 无 tabBar，切页信号在 stackedWidget 上
@@ -77,7 +82,7 @@ class MainWindow(FluentWindow):
         # 托盘菜单「退出」才真正注销热键退进程
         self._quitting = False
         self._tray_notified = False
-        tray = QSystemTrayIcon(FluentIcon.SEARCH.icon(QColor("#00b7c3")), self)
+        tray = QSystemTrayIcon(FluentIcon.SEARCH.icon(QColor("#ec4899")), self)
         tray.setToolTip("Spore 搜题——双击打开，右键退出")
         self._tray_menu = QMenu()  # 防 GC
         self._tray_menu.addAction("打开主界面", self._show_main)
@@ -102,8 +107,8 @@ class MainWindow(FluentWindow):
         if widget is self.records:
             self.records.load_categories()
             self.records.reload()
-        elif widget is self.categories:
-            self.categories.reload()
+        elif widget is self.log_page:
+            self.log_page.refresh()
         elif widget is self.settings:
             self.settings.refresh()
 
@@ -197,6 +202,33 @@ class MainWindow(FluentWindow):
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
             self._notify("warning", "落库失败", str(e), 5000)
+        self._mirror_turn(sess)
+
+    def _mirror_turn(self, sess):
+        """磁盘镜像（MV3「磁盘镜像」卡）：会话+题图再写一份到磁盘。
+
+        best-effort —— write_turn 自己吞异常，这里再兜一层，绝不拖累落库链路。
+        """
+        try:
+            ui = read_ui_settings()
+            if not ui.get("mirror", True):
+                return
+            root = ui.get("mirrorDir") or (
+                str(Path.home() / "Downloads")
+                if ui.get("mirrorDownloads", True) else "")
+            if not root:
+                return
+            out = write_turn(
+                root=root,
+                sub_root=ui.get("mirrorRoot") or "Spore/sessions",
+                title=sess.title,
+                messages=[m.to_dict() for m in sess.messages],
+                image_path=sess.image_path,
+                with_image=True,  # MV3 hint：镜像 = 会话与截图各写一份
+            )
+            LOG.info("mirror written: %s", out)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mirror skipped: %s", e)
 
     # ---------- 托盘/单例唤醒（关闭 = 收起，不是退出） ----------
     def _show_main(self):

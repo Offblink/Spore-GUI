@@ -82,12 +82,15 @@ class ApiClient:
     # ---------- 搜题记录 ----------
     def articles(self, page: int = 1, size: int = 100,
                  keyword: str | None = None,
-                 category_id: str | None = None) -> dict:
+                 category_id: str | None = None,
+                 fav: int | None = None) -> dict:
         q: dict = {"page": page, "size": size}
         if keyword:
             q["keyword"] = keyword
         if category_id:
             q["categoryId"] = category_id
+        if fav is not None:  # 1=只看收藏（review 页「收藏」分段筛选）
+            q["fav"] = fav
         qs = urllib.parse.urlencode(q)
         return self._request("GET", f"/articles?{qs}")
 
@@ -95,12 +98,27 @@ class ApiClient:
         """详情（含 content JSON）——records 详情弹窗用。"""
         return self._request("GET", f"/articles/{article_id}")
 
+    def update_article(self, article_id: str, *, title: str | None = None,
+                       fav: int | None = None,
+                       category_id: str | None = None) -> Any:
+        """PUT /articles/{id} 局部更新（后端 DTO 缺省=不改；仅传非 None 字段）。
+
+        会话卡片三按钮都走这条：重命名=title、收藏=fav(0/1)、移动=category_id。
+        """
+        body: dict = {}
+        if title is not None:
+            body["title"] = title
+        if fav is not None:
+            body["fav"] = fav
+        if category_id is not None:
+            body["categoryId"] = category_id
+        return self._request("PUT", f"/articles/{article_id}", body)
+
     def delete_article(self, article_id: str) -> Any:
         return self._request("DELETE", f"/articles/{article_id}")
 
     def move_article(self, article_id: str, category_id: str) -> Any:
-        return self._request("PUT", f"/articles/{article_id}",
-                             {"categoryId": category_id})
+        return self.update_article(article_id, category_id=category_id)
 
     def create_article(self, body: dict) -> Any:
         """回合结束落库：{title, status, messages[]} → R<ArticleVO>。"""

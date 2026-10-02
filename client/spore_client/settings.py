@@ -1,29 +1,153 @@
-"""设置页：LAN 二维码配对 + 题库目录切换 + LLM 配置展示。
+"""设置页：MV3 options.html 的卡片结构（模型 / 磁盘镜像 / 快捷键 / 配对 / 题库目录）。
 
-- 二维码载荷 = 02 认证节拍板 JSON {"v":1,"api":...,"token":...}，ZXing 渲染成图；
-  手机扫码后先 GET /users/me 验通（连通+鉴权一发验证）才置 paired。
-- key 只在环境变量里，本页只展示「已配置/未配置」，绝不回显 key 本体（红线）。
+卡片与字段样式照 options.html（白底、1px #e6e8f2、圆角 16、字段 label 11.5px
+muted、hint 12.5px、输入圆角 10 底 #fafbfe focus 边 #ec4899）。Qt 样式表不支持
+letter-spacing / text-transform / box-shadow：字距用字号+颜色近似，
+阴影用 QGraphicsDropShadowEffect。
+
+字段改动 → 600ms 防抖自动保存（options.js scheduleSave 同款）：写 settings_store
+之余同时改内存里的 llm 对象——主窗与引擎持同一实例，即改即生效，无保存按钮。
+
+红线：api_key 只活在环境变量里，本页只展示「已配置/未配置」，绝不给输入框。
+简报 §1：半圆小角（hideToggle）不移植，快捷键卡只有两个 kbd 徽标。
 """
 
 from __future__ import annotations
 
 import json
+import time
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     LineEdit,
     PrimaryPushButton,
     PushButton,
-    StrongBodyLabel,
+    SpinBox,
     SwitchButton,
 )
 
+from . import settings_store
+from .answer.llm import stream_chat
 from .answer.settings import LlmSettings
 from .api import ApiClient, ApiError, NetworkError
+
+# ---- 卡片/字段样式（options.html :44-97 同款） ----
+CARD_STYLE = (
+    "QFrame#card { background: #fff; border: 1px solid #e6e8f2;"
+    " border-radius: 16px; }"
+)
+INPUT_STYLE = (
+    "LineEdit { border: 1px solid #e6e8f2; border-radius: 10px;"
+    " background: #fafbfe; padding: 5px 9px; font-size: 13.5px; color: #1a1d2e; }"
+    "LineEdit:focus { border: 1px solid #ec4899; background: #fff; }"
+    "LineEdit:read-only { color: #4a4f6b; }"
+)
+BTN2_STYLE = (
+    "QPushButton { background: #f1f3fb; color: #4a4f6b; border: none;"
+    " border-radius: 10px; padding: 7px 18px; font-weight: 600; font-size: 13px; }"
+    "QPushButton:hover { background: #e8ebf7; }"
+    "QPushButton:pressed { background: #dde1f2; }"
+    "QPushButton:disabled { background: #f4f5fa; color: #a3a8c2; }"
+)
+TITLE_STYLE = "font-size: 16px; font-weight: 650; color: #1a1d2e;"
+LABEL_STYLE = "font-size: 11.5px; color: #7c819c; font-weight: 600;"
+HINT_STYLE = "font-size: 12.5px; color: #7c819c;"
+SUBHEAD_STYLE = "font-size: 13.5px; font-weight: 650; color: #2b2f4a;"
+
+
+def build_card(title: str, hint: str | None = None,
+               trailing: QWidget | None = None):
+    """白底圆角卡 → (card, layout, title_label)；trailing = 卡头右侧控件。"""
+    card = QFrame()
+    card.setObjectName("card")
+    card.setStyleSheet(CARD_STYLE)
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(22, 20, 22, 20)
+    lay.setSpacing(10)
+    t = QLabel(title)
+    t.setStyleSheet(TITLE_STYLE)
+    h = None
+    if hint:
+        h = QLabel(hint)
+        h.setWordWrap(True)
+        h.setStyleSheet(HINT_STYLE)
+    if trailing is None:
+        lay.addWidget(t)
+        if h is not None:
+            lay.addWidget(h)
+    else:
+        head = QHBoxLayout()
+        col = QVBoxLayout()
+        col.setSpacing(3)
+        col.addWidget(t)
+        if h is not None:
+            col.addWidget(h)
+        head.addLayout(col, 1)
+        head.addWidget(trailing, 0, Qt.AlignTop | Qt.AlignRight)
+        lay.addLayout(head)
+    # Qt 样式表无 box-shadow → 用图形效果近似（options.html 卡片阴影同参数）
+    shadow = QGraphicsDropShadowEffect(card)
+    shadow.setBlurRadius(52)
+    shadow.setOffset(0, 8)
+    shadow.setColor(QColor(20, 24, 48, 13))
+    card.setGraphicsEffect(shadow)
+    return card, lay, t
+
+
+def field_label(text: str) -> QLabel:
+    """字段 label：11.5px muted（options.html label 同款）。"""
+    lab = QLabel(text)
+    lab.setWordWrap(True)
+    lab.setStyleSheet(LABEL_STYLE)
+    return lab
+
+
+def hint_label(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setWordWrap(True)
+    lab.setStyleSheet(HINT_STYLE)
+    return lab
+
+
+def kbd_badge(text: str) -> QLabel:
+    """kbd 徽标：底 #f4f6fd、1px 边框、底边 2px、圆角 6、等宽 12px。"""
+    lab = QLabel(text)
+    lab.setStyleSheet(
+        "QLabel { background: #f4f6fd; border: 1px solid #e6e8f2;"
+        " border-bottom: 2px solid #e6e8f2; border-radius: 6px;"
+        " padding: 2px 7px; color: #1a1d2e;"
+        " font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; }")
+    return lab
+
+
+def _divider() -> QFrame:
+    line = QFrame()
+    line.setFixedHeight(1)
+    line.setStyleSheet("background: #e6e8f2;")
+    return line
+
+
+def _sub_head(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setStyleSheet(SUBHEAD_STYLE)
+    return lab
+
+
+def _b(v, default: bool) -> bool:
+    return v if isinstance(v, bool) else default
 
 
 class _LanTask(QThread):
@@ -39,6 +163,41 @@ class _LanTask(QThread):
             self.ok.emit(self.api.lan_token())
         except (ApiError, NetworkError) as e:
             self.failed.emit(str(e))
+
+
+class _ProbeTask(QThread):
+    """测试连接：QThread 里打一次真端点，回显首字耗时（options.js probe 同款文案）。"""
+
+    done = Signal(str, bool)  # (消息, 是否成功)
+
+    def __init__(self, endpoint: str, api_key: str, model: str, parent=None):
+        super().__init__(parent)
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self.model = model
+
+    def run(self):
+        t0 = time.monotonic()
+        first: dict[str, float] = {}
+
+        def on_delta(kind: str, chunk: str, acc: dict):
+            if chunk and "t0" not in first:
+                first["t0"] = time.monotonic()
+
+        try:
+            res = stream_chat(
+                endpoint=self.endpoint, api_key=self.api_key, model=self.model,
+                max_tokens=8,
+                messages=[{"role": "user", "content": "只回一个字：通"}],
+                on_delta=on_delta)
+            if "t0" in first:
+                self.done.emit(f"通了，首字 {first['t0'] - t0:.2f}s", True)
+            elif str(res.get("content") or "").strip():
+                self.done.emit(f"通了，首字 {time.monotonic() - t0:.2f}s", True)
+            else:
+                self.done.emit("连上了但没有流式响应", False)
+        except Exception as e:  # noqa: BLE001 —— 超时/异常一律收敛到 label，不弹栈
+            self.done.emit(f"失败：{e}", False)
 
 
 def _qr_matrix(payload: str) -> list[list[bool]]:
@@ -75,17 +234,225 @@ class SettingsPane(QWidget):
         self.setObjectName("settingsPage")  # FluentWindow.addSubInterface 要求非空
         self.api = api
         self.llm = llm
+        self._ready = False                # 回填门闩：回填期间的事件不许触发保存
+        self._probe_task: _ProbeTask | None = None
+        self._lan_task: _LanTask | None = None
+        self._mirror_dir = ""
+
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(600)  # options.js 防抖同款
+        self._save_timer.timeout.connect(self._save)
+
+        ui = settings_store.read()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(14)
+        root.setSpacing(10)
 
-        # ---- 手机配对 ----
-        pair_card = QVBoxLayout()
-        pair_card.addWidget(StrongBodyLabel("手机扫码配对"))
-        pair_card.addWidget(CaptionLabel(
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        body = QWidget()
+        body.setStyleSheet("QWidget { background: transparent; }")
+        stack = QVBoxLayout(body)
+        stack.setContentsMargins(0, 0, 6, 0)
+        stack.setSpacing(16)
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        self.cards: dict[str, QLabel] = {}
+
+        # ================= 卡一：模型 =================
+        card, lay, title = build_card("模型")
+        self.cards["model"] = title
+
+        lay.addWidget(field_label("模型 endpoint（OpenAI 兼容）"))
+        self.endpoint_edit = LineEdit()
+        self.endpoint_edit.setObjectName("endpointEdit")
+        self.endpoint_edit.setStyleSheet(INPUT_STYLE)
+        self.endpoint_edit.textChanged.connect(
+            lambda t: self._model_changed("endpoint", t.strip()))
+        lay.addWidget(self.endpoint_edit)
+
+        lay.addWidget(field_label("API Key"))
+        self.key_status = QLabel()
+        self.key_status.setObjectName("apiKeyStatus")  # 只是状态行，不是输入框
+        self.key_status.setWordWrap(True)
+        lay.addWidget(self.key_status)
+
+        lay.addWidget(field_label("模型名"))
+        self.model_edit = LineEdit()
+        self.model_edit.setObjectName("modelEdit")
+        self.model_edit.setStyleSheet(INPUT_STYLE)
+        self.model_edit.textChanged.connect(
+            lambda t: self._model_changed("model", t.strip()))
+        lay.addWidget(self.model_edit)
+
+        lay.addWidget(field_label(
+            "检索轮数上限（自动核实阶段用；0 = 不自动核实，追问仍可查 1 轮）"))
+        self.rounds_spin = SpinBox()
+        self.rounds_spin.setObjectName("roundsSpin")
+        self.rounds_spin.setRange(0, 10)          # MV3 options.js:43
+        self.rounds_spin.valueChanged.connect(
+            lambda v: self._model_changed("max_tool_rounds", v))
+        lay.addWidget(self.rounds_spin)
+
+        lay.addWidget(field_label("检索代理（可选）"))
+        self.proxy_edit = LineEdit()
+        self.proxy_edit.setObjectName("proxyEdit")
+        self.proxy_edit.setStyleSheet(INPUT_STYLE)
+        self.proxy_edit.setPlaceholderText("如 127.0.0.1:7897")
+        self.proxy_edit.textChanged.connect(
+            lambda t: self._model_changed("proxy", t.strip()))
+        lay.addWidget(self.proxy_edit)
+        lay.addWidget(hint_label(
+            "填了 → 引擎链 ddg→bing→brave；留空 → 只走 bing"))
+
+        self.auto_switch = SwitchButton()
+        self.auto_switch.setObjectName("autoVerifySwitch")
+        self.auto_switch.checkedChanged.connect(
+            lambda on: self._model_changed("auto_verify", on))
+        row = QHBoxLayout()
+        row.addWidget(hint_label(
+            "自动核实（答完自动联网核实；关掉后回答里出现「核实一下」按钮，点它才核实）"), 1)
+        row.addWidget(self.auto_switch)
+        lay.addLayout(row)
+
+        self.fast_switch = SwitchButton()
+        self.fast_switch.setObjectName("fastNoThinkSwitch")
+        self.fast_switch.checkedChanged.connect(
+            lambda on: self._model_changed("fast_no_think", on))
+        row = QHBoxLayout()
+        row.addWidget(hint_label("初答直接作答、不写推理（更快）"), 1)
+        row.addWidget(self.fast_switch)
+        lay.addLayout(row)
+
+        lay.addWidget(field_label("上下文保留条数"))
+        self.history_spin = SpinBox()
+        self.history_spin.setObjectName("historySpin")
+        self.history_spin.setRange(2, 50)         # MV3 options.js:45
+        self.history_spin.valueChanged.connect(
+            lambda v: self._model_changed("history_limit", v))
+        lay.addWidget(self.history_spin)
+
+        row = QHBoxLayout()
+        self.probe_btn = PushButton("测试连接")
+        self.probe_btn.setObjectName("probeBtn")
+        self.probe_btn.clicked.connect(self._probe)
+        self.probe_msg = QLabel("")
+        self.probe_msg.setObjectName("probeMsg")
+        self.probe_msg.setWordWrap(True)
+        self.probe_msg.setStyleSheet(HINT_STYLE)
+        row.addWidget(self.probe_btn)
+        row.addWidget(self.probe_msg, 1)
+        lay.addLayout(row)
+
+        if self.llm.errors:
+            err = hint_label("；".join(self.llm.errors))
+            err.setStyleSheet("font-size: 12.5px; color: #d02747;")
+            lay.addWidget(err)
+        stack.addWidget(card)
+
+        # ================= 卡二：磁盘镜像 =================
+        self.mirror_switch = SwitchButton()
+        self.mirror_switch.setObjectName("mirrorSwitch")
+        card, lay, title = build_card(
+            "磁盘镜像",
+            "打开后，会话与截图除存在后端题库外，再写一份到磁盘",
+            trailing=self.mirror_switch)
+        self.cards["mirror"] = title
+        self.mirror_switch.checkedChanged.connect(self._mirror_toggled)
+
+        self.mirror_body = QWidget()
+        body_lay = QVBoxLayout(self.mirror_body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(0)
+        lay.addWidget(self.mirror_body)
+
+        # ① 静默写盘目录
+        body_lay.addWidget(_divider())
+        head = QHBoxLayout()
+        head.addWidget(_sub_head("① 静默写盘目录"))
+        tag = QLabel("推荐")
+        tag.setStyleSheet("background: #e7f8ef; color: #0f9d58; border-radius: 999px;"
+                          " padding: 1px 8px; font-size: 11px; font-weight: 600;")
+        head.addWidget(tag)
+        head.addStretch(1)
+        body_lay.addLayout(head)
+        body_lay.addSpacing(4)
+        self.mirror_dir_state = QLabel("")
+        self.mirror_dir_state.setObjectName("dirState")
+        self.mirror_dir_state.setWordWrap(True)
+        self.mirror_dir_state.setStyleSheet(HINT_STYLE)
+        body_lay.addWidget(self.mirror_dir_state)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        pick_btn = PushButton("选择目录")
+        pick_btn.setObjectName("pickMirrorDir")
+        pick_btn.setStyleSheet(BTN2_STYLE)
+        pick_btn.clicked.connect(self._pick_mirror_dir)
+        clear_btn = PushButton("清除")
+        clear_btn.setObjectName("clearMirrorDir")
+        clear_btn.setStyleSheet(BTN2_STYLE)
+        clear_btn.clicked.connect(self._clear_mirror_dir)
+        row.addWidget(pick_btn)
+        row.addWidget(clear_btn)
+        body_lay.addLayout(row)
+        body_lay.addWidget(hint_label(
+            "选过目录后直接写进 所选目录/…/日期/，静默落盘，不再弹保存对话框。"))
+
+        # ② 没选目录时的回落
+        body_lay.addWidget(_divider())
+        body_lay.addSpacing(14)
+        body_lay.addWidget(_sub_head("② 没选目录时的回落 → 下载目录"))
+        body_lay.addSpacing(4)
+        self.mirror_dl = SwitchButton()
+        self.mirror_dl.setObjectName("mirrorDownloadsSwitch")
+        self.mirror_dl.checkedChanged.connect(lambda on: self._touch())
+        row = QHBoxLayout()
+        row.addWidget(hint_label("回落到下载目录（Downloads）"), 1)
+        row.addWidget(self.mirror_dl)
+        body_lay.addLayout(row)
+
+        # ③ 子路径
+        body_lay.addWidget(_divider())
+        body_lay.addSpacing(14)
+        body_lay.addWidget(_sub_head("③ 子路径"))
+        body_lay.addSpacing(4)
+        self.mirror_root_edit = LineEdit()
+        self.mirror_root_edit.setObjectName("mirrorRootEdit")
+        self.mirror_root_edit.setStyleSheet(INPUT_STYLE)
+        self.mirror_root_edit.setPlaceholderText("Spore/sessions")
+        self.mirror_root_edit.textChanged.connect(self._mirror_root_changed)
+        body_lay.addWidget(self.mirror_root_edit)
+        self.mirror_echo = QLabel("")
+        self.mirror_echo.setObjectName("rootEcho")
+        self.mirror_echo.setWordWrap(True)
+        self.mirror_echo.setStyleSheet(HINT_STYLE)
+        body_lay.addWidget(self.mirror_echo)
+        stack.addWidget(card)
+
+        # ================= 卡三：快捷键 =================
+        card, lay, title = build_card("快捷键")
+        self.cards["keys"] = title
+        for cap, key in (("截图快捷键：", "Alt+S"), ("浮窗快捷键：", "Alt+Z")):
+            row = QHBoxLayout()
+            row.addWidget(CaptionLabel(cap))
+            row.addWidget(kbd_badge(key))
+            row.addStretch(1)
+            lay.addLayout(row)
+        lay.addWidget(hint_label(
+            "全局热键随进程常驻；关窗收进托盘后仍可用，托盘右键退出才注销。"))
+        stack.addWidget(card)
+
+        # ================= 卡四：手机扫码配对（原实现原样保留） =================
+        card, lay, title = build_card(
+            "手机扫码配对",
             "载荷 = {\"v\":1,\"api\":...,\"token\":...}；手机存 token 后先验 /users/me "
-            "再放行同步（02 认证节拍板）。"))
+            "再放行同步（02 认证节拍板）。")
+        self.cards["pair"] = title
         row = QHBoxLayout()
         self.qr_label = QLabel("加载中…")
         self.qr_label.setFixedSize(180, 180)
@@ -93,8 +460,10 @@ class SettingsPane(QWidget):
         self.qr_label.setStyleSheet("border: 1px solid #ddd; background: #fff;")
         side = QVBoxLayout()
         self.token_edit = LineEdit()
+        self.token_edit.setObjectName("tokenEdit")
         self.token_edit.setPlaceholderText("LAN token（手机手输兜底）")
         self.token_edit.setReadOnly(True)
+        self.token_edit.setStyleSheet(INPUT_STYLE)
         self.gen_btn = PrimaryPushButton("生成二维码")
         self.gen_btn.clicked.connect(self._gen_qr)
         side.addWidget(BodyLabel("token（只读）："))
@@ -103,66 +472,149 @@ class SettingsPane(QWidget):
         side.addStretch(1)
         row.addWidget(self.qr_label)
         row.addLayout(side, 1)
-        pair_card.addLayout(row)
-        root.addLayout(pair_card)
+        lay.addLayout(row)
+        stack.addWidget(card)
 
-        # ---- 题库目录 ----
-        dir_card = QVBoxLayout()
-        dir_card.addWidget(StrongBodyLabel("题库目录"))
+        # ================= 卡五：题库目录（原实现原样保留） =================
+        card, lay, title = build_card("题库目录")
+        self.cards["dir"] = title
         dir_row = QHBoxLayout()
         self.dir_edit = LineEdit()
+        self.dir_edit.setObjectName("dirEdit")
         self.dir_edit.setReadOnly(True)
+        self.dir_edit.setStyleSheet(INPUT_STYLE)
         self.dir_btn = PushButton("切换…")
         self.dir_btn.clicked.connect(self._switch_dir)
-        self.dir_info = CaptionLabel("")
         dir_row.addWidget(self.dir_edit, 1)
         dir_row.addWidget(self.dir_btn)
-        dir_card.addLayout(dir_row)
-        dir_card.addWidget(self.dir_info)
-        root.addLayout(dir_card)
+        lay.addLayout(dir_row)
+        self.dir_info = CaptionLabel("")
+        lay.addWidget(self.dir_info)
+        stack.addWidget(card)
+        stack.addStretch(1)
 
-        # ---- LLM 配置（只展示状态，key 不回显） ----
-        llm_card = QVBoxLayout()
-        llm_card.addWidget(StrongBodyLabel("作答模型"))
-        kv = QHBoxLayout()
-        kv.addWidget(CaptionLabel(f"endpoint：{self.llm.endpoint}"))
-        kv.addStretch(1)
-        kv.addWidget(CaptionLabel(f"model：{self.llm.model}"))
-        llm_card.addLayout(kv)
-        key_row = QHBoxLayout()
-        key_row.addWidget(CaptionLabel(
-            "API key：" + ("已从环境变量读取 ✓（不显示本体）"
-                          if self.llm.api_key else "未配置 ✗")))
-        key_row.addStretch(1)
-        llm_card.addLayout(key_row)
-        if self.llm.errors:
-            llm_card.addWidget(CaptionLabel("；".join(self.llm.errors)))
-        rounds_row = QHBoxLayout()
-        rounds_row.addWidget(CaptionLabel("核实检索轮数："))
-        # LineEdit 构造器只收 parent（qfluentwidgets 1.11.3 实测），文本走 setText
-        self.rounds = LineEdit()
-        self.rounds.setText(str(self.llm.max_tool_rounds))
-        self.rounds.setFixedWidth(60)
-        rounds_row.addWidget(self.rounds)
-        rounds_row.addWidget(CaptionLabel("0=不自动核实"))
-        rounds_row.addStretch(1)
-        llm_card.addLayout(rounds_row)
-        self.auto_verify = SwitchButton()
-        self.auto_verify.setChecked(self.llm.auto_verify)
-        self.auto_verify.checkedChanged.connect(
-            lambda on: setattr(self.llm, "auto_verify", on))
-        av_row = QHBoxLayout()
-        av_row.addWidget(CaptionLabel("答完自动联网核实："))
-        av_row.addWidget(self.auto_verify)
-        av_row.addStretch(1)
-        llm_card.addLayout(av_row)
-        root.addLayout(llm_card)
-        root.addStretch(1)
-
+        # 操作状态（配对/目录/自动保存提示）—— 放滚动区外，始终可见
         self.status = CaptionLabel("")
         root.addWidget(self.status)
 
-        self._lan_task: _LanTask | None = None
+        # ---------- 回填（门闩关着，信号不触发保存） ----------
+        self.endpoint_edit.setText(self.llm.endpoint)
+        self.model_edit.setText(self.llm.model)
+        self.proxy_edit.setText(self.llm.proxy)
+        self.rounds_spin.setValue(int(self.llm.max_tool_rounds))
+        self.history_spin.setValue(int(self.llm.history_limit))
+        self.auto_switch.setChecked(bool(self.llm.auto_verify))
+        self.fast_switch.setChecked(bool(self.llm.fast_no_think))
+        if self.llm.api_key:
+            self.key_status.setText("API key：已从环境变量读取 ✓（不显示本体）")
+            self.key_status.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
+        else:
+            self.key_status.setText("未配置 ✗")
+            self.key_status.setStyleSheet("color: #d02747; font-size: 12.5px;")
+
+        self._mirror_dir = str(ui.get("mirrorDir") or "")
+        self.mirror_switch.setChecked(_b(ui.get("mirror", True), True))
+        self.mirror_dl.setChecked(_b(ui.get("mirrorDownloads", True), True))
+        root_txt = str(ui.get("mirrorRoot") or "").strip() or "Spore/sessions"
+        self.mirror_root_edit.setText(root_txt)
+        self._refresh_dir_state()
+        self.mirror_body.setVisible(self.mirror_switch.isChecked())
+
+        self._ready = True
+        self._sync_probe_btn()
+
+    # ---------- 自动保存（600ms 防抖） ----------
+    def _model_changed(self, field: str, value):
+        setattr(self.llm, field, value)   # 即改即生效（主窗/引擎持同一实例）
+        self._sync_probe_btn()
+        self._touch()
+
+    def _touch(self):
+        if not self._ready:
+            return
+        self._save_timer.start()          # 连续敲键只落最后一次
+
+    def _collect(self) -> dict:
+        return {
+            "endpoint": self.llm.endpoint,
+            "model": self.llm.model,
+            "maxToolRounds": self.llm.max_tool_rounds,
+            "historyLimit": self.llm.history_limit,
+            "proxy": self.llm.proxy,
+            "fastNoThink": self.llm.fast_no_think,
+            "autoVerify": self.llm.auto_verify,
+            "mirror": self.mirror_switch.isChecked(),
+            "mirrorDir": self._mirror_dir,
+            "mirrorDownloads": self.mirror_dl.isChecked(),
+            "mirrorRoot": self.mirror_root_edit.text().strip() or "Spore/sessions",
+        }
+
+    def _save(self):
+        data = settings_store.read()
+        data.update(self._collect())
+        settings_store.write(data)        # 白名单落盘，api_key 写不进去
+        self.status.setText("已自动保存")
+        QTimer.singleShot(2200, self._clear_saved_hint)
+
+    def _clear_saved_hint(self):
+        if self.status.text() == "已自动保存":
+            self.status.setText("")
+
+    # ---------- 磁盘镜像 ----------
+    def _mirror_toggled(self, on: bool):
+        self.mirror_body.setVisible(on)   # 主开关关掉 → ①②③ 整组隐藏
+        self._touch()
+
+    def _pick_mirror_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "选择静默写盘目录")
+        if not d:
+            return
+        self._mirror_dir = d
+        self._refresh_dir_state()
+        self._touch()
+
+    def _clear_mirror_dir(self):
+        self._mirror_dir = ""
+        self._refresh_dir_state()
+        self._touch()
+
+    def _refresh_dir_state(self):
+        if self._mirror_dir:
+            self.mirror_dir_state.setText(
+                f"已选：{self._mirror_dir} —— 之后静默写盘，不再弹保存对话框")
+            self.mirror_dir_state.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
+        else:
+            self.mirror_dir_state.setText("未选目录（走下面 ② 的回落）")
+            self.mirror_dir_state.setStyleSheet(HINT_STYLE)
+
+    def _mirror_root_changed(self, text: str):
+        root = text.strip() or "Spore/sessions"
+        self.mirror_echo.setText(f"最终路径：{root}/日期/标题.md · 题图.jpg")
+        self._touch()
+
+    # ---------- 测试连接 ----------
+    def _sync_probe_btn(self):
+        # endpoint / api_key / model 三者非空才可点（options.js:77 同款）
+        self.probe_btn.setEnabled(
+            bool(self.llm.endpoint and self.llm.api_key and self.llm.model))
+
+    def _set_probe_msg(self, text: str, color: str):
+        self.probe_msg.setStyleSheet(f"font-size: 12.5px; color: {color};")
+        self.probe_msg.setText(text)
+
+    def _probe(self):
+        if self._probe_task is not None and self._probe_task.isRunning():
+            return                       # 上一发还在飞，忽略连点
+        if not (self.llm.endpoint and self.llm.api_key and self.llm.model):
+            self._set_probe_msg("endpoint / key / model 都要填", "#d02747")
+            return
+        self._set_probe_msg("探测中…", "#7c819c")
+        self._probe_task = _ProbeTask(self.llm.endpoint, self.llm.api_key,
+                                 self.llm.model, self)
+        self._probe_task.done.connect(
+            lambda msg, ok: self._set_probe_msg(
+                msg, "#0f9d58" if ok else "#d02747"))
+        self._probe_task.start()
 
     # ---------- 配对 ----------
     def _gen_qr(self):
@@ -207,7 +659,7 @@ class SettingsPane(QWidget):
             self.status.setText(f"切换失败：{e}")
 
     def refresh(self):
-        """进入本页时拉一次目录现状。"""
+        """进入本页时拉一次目录现状（构造期不发网络请求）。"""
         try:
             info = self.api.storage_info()
             self.dir_edit.setText(str(info.get("dir", "")))
