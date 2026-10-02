@@ -72,6 +72,7 @@ def _payload_image(payload: str, size: int = 180):
 class SettingsPane(QWidget):
     def __init__(self, api: ApiClient, llm: LlmSettings, parent=None):
         super().__init__(parent)
+        self.setObjectName("settingsPage")  # FluentWindow.addSubInterface 要求非空
         self.api = api
         self.llm = llm
 
@@ -138,7 +139,9 @@ class SettingsPane(QWidget):
             llm_card.addWidget(CaptionLabel("；".join(self.llm.errors)))
         rounds_row = QHBoxLayout()
         rounds_row.addWidget(CaptionLabel("核实检索轮数："))
-        self.rounds = LineEdit(str(self.llm.max_tool_rounds))
+        # LineEdit 构造器只收 parent（qfluentwidgets 1.11.3 实测），文本走 setText
+        self.rounds = LineEdit()
+        self.rounds.setText(str(self.llm.max_tool_rounds))
         self.rounds.setFixedWidth(60)
         rounds_row.addWidget(self.rounds)
         rounds_row.addWidget(CaptionLabel("0=不自动核实"))

@@ -46,6 +46,7 @@ class _QueryTask(QThread):
 class RecordsPane(QWidget):
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
+        self.setObjectName("recordsPage")  # FluentWindow.addSubInterface 要求非空
         self.api = api
         self.page = 1
         self.keyword = ""

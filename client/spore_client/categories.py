@@ -41,6 +41,7 @@ class _TreeTask(QThread):
 class CategoriesPane(QWidget):
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
+        self.setObjectName("categoriesPage")  # FluentWindow.addSubInterface 要求非空
         self.api = api
         self._task: _TreeTask | None = None
 

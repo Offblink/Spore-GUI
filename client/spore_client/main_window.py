@@ -39,8 +39,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.categories, FluentIcon.FOLDER, "科目管理")
         self.addSubInterface(self.settings, FluentIcon.SETTING, "设置")
         # 每页首次切入拉一次数据（lazy，失败不阻断）
+        # 实测：本 flavor 的 FluentWindow 无 tabBar，切页信号在 stackedWidget 上
         self._booted: set[str] = set()
-        self.tabBar.currentChanged.connect(self._on_tab_changed)
+        self.stackedWidget.currentChanged.connect(self._on_tab_changed)
 
         # ---- 期5：作答内核 + 浮窗 + 热键 ----
         self.engine = AgentEngine(self.llm_settings, self._engine_event)
