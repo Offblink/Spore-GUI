@@ -66,7 +66,8 @@ public class MainStage extends Stage {
         TextField username = new TextField();
         username.setPromptText("用户名");
         PasswordField password = new PasswordField();
-        password.setPromptText("口令");
+        password.setPromptText("密码");
+        password.setSkin(new AsteriskSkin(password));
         Label status = new Label();
         status.setStyle("-fx-text-fill: #d33;");
 
@@ -97,7 +98,7 @@ public class MainStage extends Stage {
         form.setVgap(10);
         form.add(new Label("用户名"), 0, 0);
         form.add(username, 1, 0);
-        form.add(new Label("口令"), 0, 1);
+        form.add(new Label("密码"), 0, 1);
         form.add(password, 1, 1);
 
         HBox buttons = new HBox(10, loginBtn, registerBtn);

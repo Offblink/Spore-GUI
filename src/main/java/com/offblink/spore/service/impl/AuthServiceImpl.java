@@ -76,7 +76,7 @@ public class AuthServiceImpl implements AuthService {
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, req.getUsername().trim()));
         if (user == null || !ENCODER.matches(req.getPassword(), user.getPassword())) {
-            throw new BizException(ErrorCode.UNAUTHORIZED, "用户名或口令错误");
+            throw new BizException(ErrorCode.UNAUTHORIZED, "用户名或密码错误");
         }
         if (user.getStatus() != null && user.getStatus() == 0) {
             throw new BizException(ErrorCode.FORBIDDEN, "账号已停用");
