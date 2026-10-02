@@ -91,6 +91,10 @@ class ApiClient:
         qs = urllib.parse.urlencode(q)
         return self._request("GET", f"/articles?{qs}")
 
+    def article(self, article_id: str) -> dict:
+        """详情（含 content JSON）——records 详情弹窗用。"""
+        return self._request("GET", f"/articles/{article_id}")
+
     def delete_article(self, article_id: str) -> Any:
         return self._request("DELETE", f"/articles/{article_id}")
 

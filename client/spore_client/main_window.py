@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition
 
 from .answer.engine import AgentEngine
@@ -15,14 +14,9 @@ from .answer.settings import load_from_env
 from .answer_window import AnswerWindow
 from .api import ApiClient
 from .capture import CaptureController, HotkeyManager
-
-
-def _placeholder(name: str, text: str) -> QWidget:
-    w = QWidget()
-    w.setObjectName(name)  # FluentWindow.addSubInterface 要求非空 objectName
-    lay = QVBoxLayout(w)
-    lay.addWidget(QLabel(text))
-    return w
+from .categories import CategoriesPane
+from .records import RecordsPane
+from .settings import SettingsPane
 
 
 class MainWindow(FluentWindow):
@@ -34,16 +28,21 @@ class MainWindow(FluentWindow):
         self.api = api
         self.setWindowTitle("Spore 搜题内容管理系统")
 
-        self.records = _placeholder("recordsPage", "搜题记录（P5 实现）")
-        self.categories = _placeholder("categoriesPage", "科目管理（P5 实现）")
-        self.settings = _placeholder("settingsPage", "设置（P5 实现）")
+        # LLM 配置先行：设置页要展示它
+        self.llm_settings = load_from_env()
+
+        self.records = RecordsPane(api)
+        self.categories = CategoriesPane(api)
+        self.settings = SettingsPane(api, self.llm_settings)
 
         self.addSubInterface(self.records, FluentIcon.DOCUMENT, "搜题记录")
         self.addSubInterface(self.categories, FluentIcon.FOLDER, "科目管理")
         self.addSubInterface(self.settings, FluentIcon.SETTING, "设置")
+        # 每页首次切入拉一次数据（lazy，失败不阻断）
+        self._booted: set[str] = set()
+        self.tabBar.currentChanged.connect(self._on_tab_changed)
 
         # ---- 期5：作答内核 + 浮窗 + 热键 ----
-        self.llm_settings = load_from_env()
         self.engine = AgentEngine(self.llm_settings, self._engine_event)
         self.answer_window = AnswerWindow(self.llm_settings)
         self.answer_window.attach_engine(self.engine)
@@ -62,6 +61,21 @@ class MainWindow(FluentWindow):
             self._llm_errors = InfoBar.warning(  # 存引用防 GC
                 "作答未就绪", "；".join(self.llm_settings.errors),
                 parent=self, duration=8000, position=InfoBarPosition.TOP)
+
+    # ---------- 页签懒加载 ----------
+    def _on_tab_changed(self, idx: int):
+        widget = self.stackedWidget.widget(idx)
+        key = getattr(widget, "objectName", lambda: "")() or str(id(widget))
+        if key in self._booted:
+            return
+        self._booted.add(key)
+        if widget is self.records:
+            self.records.load_categories()
+            self.records.reload()
+        elif widget is self.categories:
+            self.categories.reload()
+        elif widget is self.settings:
+            self.settings.refresh()
 
     # ---------- 热键 ----------
     def _toggle_answer_window(self):
