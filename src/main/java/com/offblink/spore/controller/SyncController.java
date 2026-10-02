@@ -3,8 +3,8 @@ package com.offblink.spore.controller;
 import com.offblink.spore.common.R;
 import com.offblink.spore.controller.dto.SyncPushReq;
 import com.offblink.spore.security.UserContext;
+import com.offblink.spore.service.StorageService;
 import com.offblink.spore.service.SyncService;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,12 +33,15 @@ import java.util.Map;
 public class SyncController {
 
     private final SyncService syncService;
-    private final Path storageDir;
+    private final StorageService storageService;
 
-    public SyncController(SyncService syncService,
-                          @Value("${spore.storage.data-dir}") String dataDir) {
+    public SyncController(SyncService syncService, StorageService storageService) {
         this.syncService = syncService;
-        this.storageDir = Paths.get(dataDir).toAbsolutePath().normalize();
+        this.storageService = storageService;
+    }
+
+    private java.nio.file.Path storageDir() {
+        return java.nio.file.Paths.get(storageService.currentDir());
     }
 
     @GetMapping("/pull")
@@ -64,23 +67,24 @@ public class SyncController {
         if (safeId.isEmpty()) {
             return R.fail(40001, "articleId 非法");
         }
-        Files.createDirectories(storageDir);
+        Path dir = storageDir();
+        Files.createDirectories(dir);
         String ext = extensionOf(file.getOriginalFilename());
-        Path target = storageDir.resolve(safeId + ext);
+        Path target = dir.resolve(safeId + ext);
         // 先写临时文件再原子移动——半途失败不毁已有题图
-        Path tmp = storageDir.resolve(safeId + ext + ".part");
+        Path tmp = dir.resolve(safeId + ext + ".part");
         file.transferTo(tmp);
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         Map<String, String> data = new LinkedHashMap<String, String>();
-        data.put("path", storageDir.relativize(target).toString());
+        data.put("path", dir.relativize(target).toString());
         return R.ok(data);
     }
 
     /** 拉题图：按相对路径读盘（路径穿越防护：normalize 后必须仍在题库目录内） */
     @GetMapping("/pull-attachment")
     public ResponseEntity<byte[]> pullAttachment(@RequestParam String path) throws IOException {
-        Path resolved = storageDir.resolve(path).normalize();
-        if (!resolved.startsWith(storageDir) || !Files.isRegularFile(resolved)) {
+        Path resolved = storageDir().resolve(path).normalize();
+        if (!resolved.startsWith(storageDir()) || !Files.isRegularFile(resolved)) {
             return ResponseEntity.notFound().build();
         }
         byte[] bytes = Files.readAllBytes(resolved);

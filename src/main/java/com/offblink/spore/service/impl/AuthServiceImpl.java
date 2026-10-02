@@ -120,4 +120,18 @@ public class AuthServiceImpl implements AuthService {
     public String lanToken() {
         return tokenService.lanToken();
     }
+
+    @Override
+    public String createDeviceToken(Long userId) {
+        return tokenService.createDeviceToken(userId);
+    }
+
+    @Override
+    public String deviceLogin(String deviceToken) {
+        String jwt = tokenService.deviceLogin(deviceToken);
+        if (jwt == null) {
+            throw new BizException(ErrorCode.UNAUTHORIZED, "设备令牌无效，请重新登录");
+        }
+        return jwt;
+    }
 }

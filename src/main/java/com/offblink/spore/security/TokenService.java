@@ -33,6 +33,9 @@ public class TokenService {
 
     private static final String KEY_LAN_TOKEN = "lan_token";
     private static final String KEY_LAN_UID = "lan_token_uid";
+    /** 本机设备令牌（桌面静默登录）：持久化在 sys_config，源码零硬编码 */
+    private static final String KEY_DEVICE_TOKEN = "device_token";
+    private static final String KEY_DEVICE_UID = "device_token_uid";
     /** 运行时生成的 JWT 签名密钥（每次启动不同） */
     private static final SecretKey JWT_KEY = Keys.secretKeyFor(SignatureAlgorithm.HS256);
     /** 作废的 JWT jti（logout）；仅本进程内存，重启随 JWT_KEY 一起失效 */
@@ -124,6 +127,36 @@ public class TokenService {
     /** LAN token 本体（设置页渲染二维码用） */
     public String lanToken() {
         return lanToken;
+    }
+
+    /**
+     * 轮换并签发本机设备令牌：持久化进 sys_config，绑定当前用户。
+     * 每次「信任本机」动作都换新值——旧文件即刻失效，可远程「踢掉」本机记住的状态。
+     */
+    public synchronized String createDeviceToken(Long userId) {
+        String token = randomHex(24);
+        put(KEY_DEVICE_TOKEN, token);
+        put(KEY_DEVICE_UID, String.valueOf(userId));
+        return token;
+    }
+
+    /**
+     * 设备令牌 → 普通 JWT 的兑换。令牌无效/绑定用户失效返回 null（调用方转 40101）。
+     * 换出来的仍是普通 JWT（同一签名通道）——AOP/拦截器完全无感知，权限模型零改动。
+     */
+    public String deviceLogin(String deviceToken) {
+        if (deviceToken == null || deviceToken.isEmpty()) {
+            return null;
+        }
+        String stored = get(KEY_DEVICE_TOKEN);
+        if (stored == null || !stored.equals(deviceToken)) {
+            return null;
+        }
+        String uid = get(KEY_DEVICE_UID);
+        if (uid == null || uid.isEmpty()) {
+            return null;
+        }
+        return issue(Long.valueOf(uid));
     }
 
     private String get(String key) {

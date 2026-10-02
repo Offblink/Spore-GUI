@@ -5,6 +5,7 @@ import com.offblink.spore.common.R;
 import com.offblink.spore.controller.dto.LoginReq;
 import com.offblink.spore.controller.dto.LoginVO;
 import com.offblink.spore.controller.dto.RegisterReq;
+import com.offblink.spore.security.UserContext;
 import com.offblink.spore.service.AuthService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -14,10 +15,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.validation.Valid;
+import java.util.Map;
 
 /**
  * 认证接口（design/02 第一节）：注册/登录/退出/当前用户/LAN token。
- * register/login 对外公开（拦截器已排除），其余走登录态。
+ * register/login/device-login 对外公开（拦截器已排除），其余走登录态。
  */
 @RestController
 @RequestMapping("/api/auth")
@@ -53,5 +55,20 @@ public class AuthController {
     @GetMapping("/lan-token")
     public R<String> lanToken() {
         return R.ok(authService.lanToken());
+    }
+
+    /**
+     * 签发本机设备令牌（登录后调用）：GUI 拿它存本机，下次启动免输口令。
+     * 令牌只存在本机文件（device.token，gitignore）与 sys_config——源码零硬编码。
+     */
+    @PostMapping("/device-token")
+    public R<String> createDeviceToken() {
+        return R.ok(authService.createDeviceToken(UserContext.getUserId()));
+    }
+
+    /** 设备令牌换 JWT（公开）：桌面启动捷径；换到的还是普通 JWT，权限模型零改动 */
+    @PostMapping("/device-login")
+    public R<String> deviceLogin(@RequestBody Map<String, String> body) {
+        return R.ok(authService.deviceLogin(body.get("deviceToken")));
     }
 }

@@ -92,6 +92,13 @@
       <version>20240303</version>
     </dependency>
 
+    <!-- 二维码渲染（设置页扫码配对，design/02 认证节）：纯 Java，零 native -->
+    <dependency>
+      <groupId>com.google.zxing</groupId>
+      <artifactId>core</artifactId>
+      <version>3.5.3</version>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
