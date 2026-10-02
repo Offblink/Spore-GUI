@@ -2,7 +2,8 @@
 
 04 文档 §一/§五 纪律落地：
 - 冻结帧：抓完只用位图，屏幕再变也不跟
-- 最小框 60×40（与 MV3 PANEL 判定同值），太小提示不收；ESC 取消
+- 框太小判定与 MV3 `overlay.js` 同口径：宽、高**都**低于 60×40 才拒
+  （有其一够大就放行——宽条、高条都能截）；ESC 取消
 - HiDPI：抓屏是物理像素、Qt 是逻辑坐标（本机 150%）→ 比例映射，不手算 DPI；
   map_rect 是纯函数，pytest 直接钉死（04 验收清单第 1 条）
 - 抓帧前不隐藏自家窗口（2026-10-02 用户拍板「不需要最小化程序，用户自己会
@@ -55,7 +56,10 @@ def map_rect(sel: tuple[float, float, float, float],
 
 
 def too_small(w: float, h: float) -> bool:
-    return w < MIN_W or h < MIN_H
+    """MV3 `overlay.js` 口径：两者有其一达到下限就允许，
+    宽高**都**低于下限才算框太小（宽条、高条都能截，避免误杀细长截图）。
+    """
+    return w < MIN_W and h < MIN_H
 
 
 def encode_jpeg(img: Image.Image, dest: Path) -> Path:
@@ -164,7 +168,9 @@ class CropOverlay(QWidget):
         if r.isEmpty():
             return
         if too_small(r.width(), r.height()):
-            self._hint = f"框太小（最小 {MIN_W}×{MIN_H}），重新拖或按 ESC 取消"
+            self._hint = (f"框太小 {int(r.width())}×{int(r.height())}"
+                          f"（宽 ≥{MIN_W} 或 高 ≥{MIN_H} 即可），"
+                          "重新拖或按 ESC 取消")
             self._rect = None
             self.update()
             return

@@ -39,10 +39,13 @@ def test_map_rect_negative_drag_normalized():
 
 
 def test_too_small_matches_mv3_panel_threshold():
-    assert too_small(59, 40) is True   # 差 1 像素也不收
-    assert too_small(60, 39) is True
-    assert too_small(60, 40) is False   # MV3 PANEL 判定同值
-    assert too_small(61, 41) is False
+    # MV3 overlay.js:124 判定口径：宽高**都**低于下限才算太小（有其一够大就放行）
+    assert too_small(59, 39) is True    # 双低 → 拒
+    assert too_small(59, 40) is False   # 高达下限 → 放行（宽条）
+    assert too_small(60, 39) is False   # 宽达下限 → 放行（高条）
+    assert too_small(60, 40) is False
+    assert too_small(100, 10) is False  # 细长横条也放行（用户口径：一个够即可）
+    assert too_small(10, 40) is False
 
 
 def test_encode_jpeg_long_edge_and_format(tmp_path):

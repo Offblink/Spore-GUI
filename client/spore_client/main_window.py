@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition
@@ -159,8 +159,10 @@ class MainWindow(FluentWindow):
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
             self._notify("warning", "落库失败", str(e), 5000)
 
-    # ---------- 托盘（关闭 = 收起，不是退出） ----------
+    # ---------- 托盘/单例唤醒（关闭 = 收起，不是退出） ----------
     def _show_main(self):
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()
