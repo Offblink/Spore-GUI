@@ -2,14 +2,22 @@
 
 渲染：markdown 库转 HTML 进 QTextBrowser（MdCard 思路）；
 流式节流 200ms 一次重渲（04 §四：别每个 delta 重排 DOM）。
-Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）。
+Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；
+每次新截屏落在选区附近（04 §四，越界钳回屏内），Esc 隐藏。
 """
 
 from __future__ import annotations
 
 import markdown
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLineEdit,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import CaptionLabel, FluentIcon, PrimaryPushButton, StrongBodyLabel, ToolButton
 
 from .answer.engine import AgentEngine
@@ -28,6 +36,25 @@ STATUS_TEXT = {
 def _md_html(text: str) -> str:
     return markdown.markdown(
         text, extensions=["fenced_code", "tables", "nl2br", "math"])
+
+
+def place_near(sel: tuple[float, float, float, float],
+               panel_w: int, panel_h: int,
+               screen_w: int, screen_h: int,
+               margin: int = 12) -> tuple[int, int]:
+    """04 §四：浮窗出现在选区附近，越界钳回屏内。
+
+    横向优先选区右侧，放不下换左侧，两边都放不下贴屏幕左缘（钳位）；
+    纵向与选区垂直居中对齐，再钳进屏幕。纯函数，pytest 钉住。
+    """
+    sx, sy, sw, sh = sel
+    y = round(sy + sh / 2 - panel_h / 2)
+    y = max(margin, min(screen_h - panel_h - margin, y))
+    x = round(sx + sw + margin)
+    if x + panel_w > screen_w - margin:
+        x = round(sx - panel_w - margin)
+    x = max(margin, min(screen_w - panel_w - margin, x))
+    return x, y
 
 
 class AnswerWindow(QWidget):
@@ -130,10 +157,17 @@ class AnswerWindow(QWidget):
         """引擎事件 → UI（引擎在后台线程 emit，Qt 信号自动队列化到主线程）。"""
         self._engine = engine
 
-    def new_turn(self, image_path: str, supplement: str = ""):
+    def new_turn(self, image_path: str, supplement: str = "",
+                 sel: tuple[float, float, float, float] | None = None):
         self._clear()
+        if sel is not None:  # 04 §四：出现在选区附近，越界钳回屏内
+            screen = QApplication.instance().primaryScreen().size()
+            self.move(*place_near(sel, self.width(), self.height(),
+                                  screen.width(), screen.height()))
         self.show()
         self.raise_()
+        self.activateWindow()
+        self.input.setFocus()  # 直接可追问；Esc 仍由本窗 keyPressEvent 接住隐藏
         if self._engine is not None:
             self._engine.new_capture_turn(image_path, supplement)
 

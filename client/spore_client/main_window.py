@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition
 
 from .answer.engine import AgentEngine
@@ -58,6 +60,21 @@ class MainWindow(FluentWindow):
             HotkeyManager(self.toggleAnswerRequested.emit, "alt+z"),
         ]
         self.toggleAnswerRequested.connect(self._toggle_answer_window)
+
+        # 关闭 → 托盘（2026-10-02 用户拍板）：窗口收起、进程与热键常驻，
+        # 托盘菜单「退出」才真正注销热键退进程
+        self._quitting = False
+        self._tray_notified = False
+        tray = QSystemTrayIcon(FluentIcon.SEARCH.icon(QColor("#00b7c3")), self)
+        tray.setToolTip("Spore 搜题——双击打开，右键退出")
+        self._tray_menu = QMenu()  # 防 GC
+        self._tray_menu.addAction("打开主界面", self._show_main)
+        self._tray_menu.addAction("退出 Spore", self._really_quit)
+        tray.setContextMenu(self._tray_menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.show()
+        self._tray = tray  # 防 GC
+
         if self.llm_settings.errors:
             self._llm_errors = InfoBar.warning(  # 存引用防 GC
                 "作答未就绪", "；".join(self.llm_settings.errors),
@@ -88,19 +105,30 @@ class MainWindow(FluentWindow):
             aw.show()
             aw.raise_()
 
+    # ---------- 提示（主窗隐藏时 InfoBar 没人看得见 → 改走托盘气泡） ----------
+    def _notify(self, level: str, title: str, msg: str,
+                duration: int = 6000):
+        if self.isVisible():
+            (InfoBar.error if level == "error" else InfoBar.warning)(
+                title, msg, parent=self, duration=duration,
+                position=InfoBarPosition.TOP)
+        else:
+            icon = (QSystemTrayIcon.MessageIcon.Critical if level == "error"
+                    else QSystemTrayIcon.MessageIcon.Warning)
+            self._tray.showMessage(title, msg, icon, duration)
+
     # ---------- 截屏 → 作答 ----------
-    def _on_captured(self, path: str):
+    def _on_captured(self, path: str,
+                     sel: tuple[float, float, float, float]):
         if not self.llm_settings.ready:
-            InfoBar.error("无法作答", "缺少 LLM key，截图已存盘：" + path,
-                          parent=self, duration=6000,
-                          position=InfoBarPosition.TOP)
+            self._notify("error", "无法作答",
+                         "缺少 LLM key，截图已存盘：" + path, 6000)
             return
-        self.answer_window.new_turn(path)
+        self.answer_window.new_turn(path, sel=sel)
 
     def _followup(self, text: str):
         if not self.engine.send_followup(text):
-            InfoBar.warning("稍等", "当前回合还没结束", parent=self,
-                            duration=2500, position=InfoBarPosition.TOP)
+            self._notify("warning", "稍等", "当前回合还没结束", 2500)
 
     # ---------- 引擎事件（后台线程 emit → Qt 自动队列回主线程） ----------
     def _engine_event(self, ev: dict):
@@ -129,10 +157,35 @@ class MainWindow(FluentWindow):
             if art_id and sess.image_path:
                 self.api.push_attachment(art_id, sess.image_path)
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
-            InfoBar.warning("落库失败", str(e), parent=self, duration=5000,
-                            position=InfoBarPosition.TOP)
+            self._notify("warning", "落库失败", str(e), 5000)
+
+    # ---------- 托盘（关闭 = 收起，不是退出） ----------
+    def _show_main(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleTrigger):
+            self._show_main()
+
+    def _really_quit(self):
+        self._quitting = True
+        self.close()  # closeEvent 走真退分支：注销热键、停引擎
+        QApplication.instance().quit()
 
     def closeEvent(self, ev):
+        if not self._quitting:
+            ev.ignore()
+            self.hide()
+            self.answer_window.hide()
+            if not self._tray_notified:
+                self._tray_notified = True
+                self._tray.showMessage(
+                    "Spore 仍在运行", "已收进托盘：双击托盘图标打开，右键退出",
+                    QSystemTrayIcon.MessageIcon.Information, 3000)
+            return
         for h in self._hotkeys:
             h.close()
         self._capture.shutdown()

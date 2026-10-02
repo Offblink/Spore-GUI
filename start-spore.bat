@@ -25,7 +25,7 @@ exit /b %wp_rc%
   Spore 一键启动：后端（已在跑则跳过）+ 客户端（已在跑则跳过），可重复双击不打架。
 .DESCRIPTION
   后端 = mvn spring-boot:run（最小化 cmd 窗口；关那个窗口 = 停后端）。
-  客户端 = client/.venv pythonw -m spore_client.main（GUI 关窗即退，热键随之注销）。
+  客户端 = client/.venv pythonw -m spore_client.main（GUI 关窗进托盘，热键常驻；托盘右键退出才注销）。
   JAVA_HOME 钉死 jdk-1.8（本机课设口径，别让系统默认 JDK 混进来）。
 #>
 [CmdletBinding()]

@@ -1,11 +1,12 @@
-"""期5 截屏链路：全局热键 → 隐藏自家窗口 → 抓帧 → 冻结帧框选 → JPEG。
+"""期5 截屏链路：全局热键 → 抓帧 → 冻结帧框选 → JPEG。
 
 04 文档 §一/§五 纪律落地：
 - 冻结帧：抓完只用位图，屏幕再变也不跟
 - 最小框 60×40（与 MV3 PANEL 判定同值），太小提示不收；ESC 取消
 - HiDPI：抓屏是物理像素、Qt 是逻辑坐标（本机 150%）→ 比例映射，不手算 DPI；
   map_rect 是纯函数，pytest 直接钉死（04 验收清单第 1 条）
-- 抓帧前隐藏自家窗口（防截到自己），抓完立刻恢复（冻结帧全屏不透明盖住）
+- 抓帧前不隐藏自家窗口（2026-10-02 用户拍板「不需要最小化程序，用户自己会
+  调整」）——自家窗口入不入镜由用户自己挪窗口决定
 
 单屏 v1：抓主屏、覆盖层对齐主屏；多屏/异常缩放为已知边界（04 §五.1）。
 """
@@ -18,7 +19,7 @@ from pathlib import Path
 
 import keyboard
 from PIL import Image, ImageGrab
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -28,7 +29,6 @@ JPEG_QUALITY = 82
 # 与 MV3 端一致（用户拍板 2026-10-02）：Alt+S 截屏；
 # Alt+Z 呼出回答面板（P4 建 AnswerWindow 时注册，MV3 hideToggle 同款语义）
 HOTKEY = "alt+s"
-HIDE_DELAY_MS = 220  # 窗口隐藏 → 抓帧的合成间隔
 CAPTURE_DIR = Path(
     os.environ.get("SPORE_HOME", Path.home() / "AppData" / "Local" / "Spore")
 ) / "captures"
@@ -181,8 +181,7 @@ class CropOverlay(QWidget):
 
 class CaptureController:
     def __init__(self, on_captured):
-        self._on_captured = on_captured  # 收到 JPEG 路径 str
-        self._hidden: list[QWidget] = []
+        self._on_captured = on_captured  # 收到 (JPEG 路径 str, 逻辑选区)
         self._overlay: CropOverlay | None = None
         self._image: Image.Image | None = None
         self._logical: tuple[int, int] = (0, 0)
@@ -193,13 +192,9 @@ class CaptureController:
         if self._busy:
             return
         self._busy = True
-        app = QApplication.instance()
-        screen = app.primaryScreen()
+        screen = QApplication.instance().primaryScreen()
         self._logical = (screen.size().width(), screen.size().height())
-        self._hidden = [w for w in app.topLevelWidgets() if w.isVisible()]
-        for w in self._hidden:
-            w.hide()
-        QTimer.singleShot(HIDE_DELAY_MS, self._grab)
+        self._grab()
 
     def _grab(self):
         # PIL 在本进程（Qt6 per-monitor aware）按物理像素出图；
@@ -211,10 +206,6 @@ class CaptureController:
             self._image = ImageGrab.grab(bbox=bbox)
         except OSError:
             self._image = ImageGrab.grab()  # bbox 越界等异常时退回全屏（单屏恒等）
-        # 抓完即恢复——覆盖层全屏不透明，恢复的窗口藏它后面
-        for w in self._hidden:
-            w.show()
-        self._hidden = []
         ov = CropOverlay(self._image, self._logical)
         ov.selected.connect(self._on_selected)
         ov.cancelled.connect(self._close)
@@ -230,7 +221,7 @@ class CaptureController:
         dest = CAPTURE_DIR / f"cap-{stamp}.jpg"
         encode_jpeg(crop, dest)
         self._close()
-        self._on_captured(str(dest))
+        self._on_captured(str(dest), sel)
 
     def _close(self):
         if self._overlay is not None:
