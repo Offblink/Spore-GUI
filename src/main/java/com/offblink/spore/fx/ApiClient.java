@@ -170,9 +170,15 @@ public class ApiClient {
         if (token != null) {
             builder.header("Authorization", "Bearer " + token);
         }
-        RequestBody rb = (body == null)
-                ? RequestBody.create("", JSON)
-                : RequestBody.create(body.toString(), JSON);
+        // OkHttp:GET/DELETE 禁止带 body,POST/PUT 必须有 body
+        RequestBody rb;
+        if (body != null) {
+            rb = RequestBody.create(body.toString(), JSON);
+        } else if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
+            rb = RequestBody.create("", JSON);
+        } else {
+            rb = null;
+        }
         builder.method(method, rb);
         Response resp = http.newCall(builder.build()).execute();
         String text = (resp.body() != null) ? resp.body().string() : "{}";

@@ -6,3 +6,10 @@ data/
 *.class
 application-local.yml
 device.token
+
+# Python 客户端（client/）
+client/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
