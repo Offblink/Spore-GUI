@@ -10,6 +10,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from .api import ApiClient
+from .app_icon import app_icon
 from .log import get_logger
 from .login import LoginWindow, try_device_login
 from .main_window import MainWindow
@@ -64,6 +65,7 @@ def main() -> int:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Spore.Desktop")
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
+    app.setWindowIcon(app_icon())  # = MV3 扩展图标（用户 2026-10-02 拍板）
     # MV3 品牌粉 + 浅色（design-brief §0）：MV3 options/review/drawer 均为纯浅色
     # 设计，强制浅色避免深色导航配白卡的错配
     from qfluentwidgets import Theme, setTheme, setThemeColor

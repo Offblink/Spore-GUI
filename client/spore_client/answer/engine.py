@@ -267,7 +267,8 @@ class AgentEngine:
         msg = Msg(role="assistant", kind="chat")
         sess.messages.append(msg)
         idx = len(sess.messages) - 1
-        self._emit({"type": "chat-start", "idx": idx})
+        # text = 用户追问原文：面板要把它显示成用户气泡（MV3 utext 同语义）
+        self._emit({"type": "chat-start", "idx": idx, "text": user_msg.text})
         set_search_proxy(self.settings.proxy)
         # 追问轮次下限 1：设置关的是「自动核实」，不是「永远不许查」
         rounds = max(1, self.settings.max_tool_rounds)

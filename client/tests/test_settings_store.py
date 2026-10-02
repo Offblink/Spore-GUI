@@ -37,20 +37,21 @@ def test_read_corrupt_file_returns_empty(store):
 
 
 def test_write_read_roundtrip(store):
-    store.write({"endpoint": "https://x/e", "mirror": True, "mirrorDir": "D:/m"})
+    store.write({"endpoint": "https://x/e", "proxy": "1.2.3.4:5",
+                 "autoVerify": False})
     assert store.read() == {
-        "endpoint": "https://x/e", "mirror": True, "mirrorDir": "D:/m",
+        "endpoint": "https://x/e", "proxy": "1.2.3.4:5", "autoVerify": False,
     }
 
 
 def test_api_key_never_persisted(store):
     # 红线：key 只在环境变量 —— 就算调用方误塞进来，白名单也不许它落盘
     store.write({"endpoint": "https://x/e", "api_key": "sk-secret",
-                 "apiKey": "sk-2", "mirror": True})
+                 "apiKey": "sk-2", "proxy": "1.2.3.4:5"})
     raw = store.PATH.read_text(encoding="utf-8")
     assert "api_key" not in raw and "apiKey" not in raw
     assert "sk-secret" not in raw
-    assert store.read() == {"endpoint": "https://x/e", "mirror": True}
+    assert store.read() == {"endpoint": "https://x/e", "proxy": "1.2.3.4:5"}
 
 
 # ---------- apply_to_llm ----------

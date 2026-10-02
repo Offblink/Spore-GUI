@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition
 
@@ -18,14 +17,13 @@ from .answer.engine import AgentEngine
 from .answer.settings import load_from_env
 from .answer_window import AnswerWindow
 from .api import ApiClient
+from .app_icon import app_icon
 from .capture import CaptureController, HotkeyManager
 from .log import get_logger
 from .log_page import LogPane
-from .mirror import write_turn
 from .records import RecordsPane
 from .settings import SettingsPane
 from .settings_store import apply_to_llm
-from .settings_store import read as read_ui_settings
 
 LOG = get_logger()
 
@@ -41,6 +39,9 @@ class MainWindow(FluentWindow):
         super().__init__(parent)
         self.api = api
         self.setWindowTitle("Spore 搜题内容管理系统")
+        # 用户 2026-10-02：「GUI 应用的长宽都不够」——默认 1280×860，下限 1024×700
+        self.resize(1280, 860)
+        self.setMinimumSize(1024, 700)
 
         # LLM 配置先行：环境变量为底，UI 设置文件补缺（env 显式设置者优先）
         self.llm_settings = apply_to_llm(load_from_env())
@@ -66,6 +67,7 @@ class MainWindow(FluentWindow):
         self.engine = AgentEngine(self.llm_settings, self.engineEvent.emit)
         self.answer_window = AnswerWindow(self.llm_settings)
         self.answer_window.attach_engine(self.engine)
+        self.answer_window.attach_api(api)  # 面板 💬 会话列表 / ★ 收藏要打后端
         self.answer_window.followupRequested.connect(self._followup)
 
         # 截屏完成 → 喂给作答浮窗（P3 只落盘的那一步现在接上了）
@@ -82,7 +84,7 @@ class MainWindow(FluentWindow):
         # 托盘菜单「退出」才真正注销热键退进程
         self._quitting = False
         self._tray_notified = False
-        tray = QSystemTrayIcon(FluentIcon.SEARCH.icon(QColor("#ec4899")), self)
+        tray = QSystemTrayIcon(app_icon(), self)
         tray.setToolTip("Spore 搜题——双击打开，右键退出")
         self._tray_menu = QMenu()  # 防 GC
         self._tray_menu.addAction("打开主界面", self._show_main)
@@ -196,39 +198,16 @@ class MainWindow(FluentWindow):
             art_id = art.get("id") if isinstance(art, dict) else None
             if art_id and sess.image_path:
                 self.api.push_attachment(art_id, sess.image_path)
+            if art_id:  # 落库后才有 id：面板 ★ 才知道收藏对象
+                self.answer_window.set_current_article(
+                    art_id, bool(art.get("fav")) if isinstance(art, dict)
+                    else False)
             LOG.info("persisted turn id=%s in %.0fms", art_id,
                      (time.monotonic() - t0) * 1000)
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
             self._notify("warning", "落库失败", str(e), 5000)
-        self._mirror_turn(sess)
-
-    def _mirror_turn(self, sess):
-        """磁盘镜像（MV3「磁盘镜像」卡）：会话+题图再写一份到磁盘。
-
-        best-effort —— write_turn 自己吞异常，这里再兜一层，绝不拖累落库链路。
-        """
-        try:
-            ui = read_ui_settings()
-            if not ui.get("mirror", True):
-                return
-            root = ui.get("mirrorDir") or (
-                str(Path.home() / "Downloads")
-                if ui.get("mirrorDownloads", True) else "")
-            if not root:
-                return
-            out = write_turn(
-                root=root,
-                sub_root=ui.get("mirrorRoot") or "Spore/sessions",
-                title=sess.title,
-                messages=[m.to_dict() for m in sess.messages],
-                image_path=sess.image_path,
-                with_image=True,  # MV3 hint：镜像 = 会话与截图各写一份
-            )
-            LOG.info("mirror written: %s", out)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("mirror skipped: %s", e)
 
     # ---------- 托盘/单例唤醒（关闭 = 收起，不是退出） ----------
     def _show_main(self):

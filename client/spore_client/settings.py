@@ -237,14 +237,11 @@ class SettingsPane(QWidget):
         self._ready = False                # 回填门闩：回填期间的事件不许触发保存
         self._probe_task: _ProbeTask | None = None
         self._lan_task: _LanTask | None = None
-        self._mirror_dir = ""
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(600)  # options.js 防抖同款
         self._save_timer.timeout.connect(self._save)
-
-        ui = settings_store.read()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -355,85 +352,6 @@ class SettingsPane(QWidget):
             lay.addWidget(err)
         stack.addWidget(card)
 
-        # ================= 卡二：磁盘镜像 =================
-        self.mirror_switch = SwitchButton()
-        self.mirror_switch.setObjectName("mirrorSwitch")
-        card, lay, title = build_card(
-            "磁盘镜像",
-            "打开后，会话与截图除存在后端题库外，再写一份到磁盘",
-            trailing=self.mirror_switch)
-        self.cards["mirror"] = title
-        self.mirror_switch.checkedChanged.connect(self._mirror_toggled)
-
-        self.mirror_body = QWidget()
-        body_lay = QVBoxLayout(self.mirror_body)
-        body_lay.setContentsMargins(0, 0, 0, 0)
-        body_lay.setSpacing(0)
-        lay.addWidget(self.mirror_body)
-
-        # ① 静默写盘目录
-        body_lay.addWidget(_divider())
-        head = QHBoxLayout()
-        head.addWidget(_sub_head("① 静默写盘目录"))
-        tag = QLabel("推荐")
-        tag.setStyleSheet("background: #e7f8ef; color: #0f9d58; border-radius: 999px;"
-                          " padding: 1px 8px; font-size: 11px; font-weight: 600;")
-        head.addWidget(tag)
-        head.addStretch(1)
-        body_lay.addLayout(head)
-        body_lay.addSpacing(4)
-        self.mirror_dir_state = QLabel("")
-        self.mirror_dir_state.setObjectName("dirState")
-        self.mirror_dir_state.setWordWrap(True)
-        self.mirror_dir_state.setStyleSheet(HINT_STYLE)
-        body_lay.addWidget(self.mirror_dir_state)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        pick_btn = PushButton("选择目录")
-        pick_btn.setObjectName("pickMirrorDir")
-        pick_btn.setStyleSheet(BTN2_STYLE)
-        pick_btn.clicked.connect(self._pick_mirror_dir)
-        clear_btn = PushButton("清除")
-        clear_btn.setObjectName("clearMirrorDir")
-        clear_btn.setStyleSheet(BTN2_STYLE)
-        clear_btn.clicked.connect(self._clear_mirror_dir)
-        row.addWidget(pick_btn)
-        row.addWidget(clear_btn)
-        body_lay.addLayout(row)
-        body_lay.addWidget(hint_label(
-            "选过目录后直接写进 所选目录/…/日期/，静默落盘，不再弹保存对话框。"))
-
-        # ② 没选目录时的回落
-        body_lay.addWidget(_divider())
-        body_lay.addSpacing(14)
-        body_lay.addWidget(_sub_head("② 没选目录时的回落 → 下载目录"))
-        body_lay.addSpacing(4)
-        self.mirror_dl = SwitchButton()
-        self.mirror_dl.setObjectName("mirrorDownloadsSwitch")
-        self.mirror_dl.checkedChanged.connect(lambda on: self._touch())
-        row = QHBoxLayout()
-        row.addWidget(hint_label("回落到下载目录（Downloads）"), 1)
-        row.addWidget(self.mirror_dl)
-        body_lay.addLayout(row)
-
-        # ③ 子路径
-        body_lay.addWidget(_divider())
-        body_lay.addSpacing(14)
-        body_lay.addWidget(_sub_head("③ 子路径"))
-        body_lay.addSpacing(4)
-        self.mirror_root_edit = LineEdit()
-        self.mirror_root_edit.setObjectName("mirrorRootEdit")
-        self.mirror_root_edit.setStyleSheet(INPUT_STYLE)
-        self.mirror_root_edit.setPlaceholderText("Spore/sessions")
-        self.mirror_root_edit.textChanged.connect(self._mirror_root_changed)
-        body_lay.addWidget(self.mirror_root_edit)
-        self.mirror_echo = QLabel("")
-        self.mirror_echo.setObjectName("rootEcho")
-        self.mirror_echo.setWordWrap(True)
-        self.mirror_echo.setStyleSheet(HINT_STYLE)
-        body_lay.addWidget(self.mirror_echo)
-        stack.addWidget(card)
-
         # ================= 卡三：快捷键 =================
         card, lay, title = build_card("快捷键")
         self.cards["keys"] = title
@@ -512,14 +430,6 @@ class SettingsPane(QWidget):
             self.key_status.setText("未配置 ✗")
             self.key_status.setStyleSheet("color: #d02747; font-size: 12.5px;")
 
-        self._mirror_dir = str(ui.get("mirrorDir") or "")
-        self.mirror_switch.setChecked(_b(ui.get("mirror", True), True))
-        self.mirror_dl.setChecked(_b(ui.get("mirrorDownloads", True), True))
-        root_txt = str(ui.get("mirrorRoot") or "").strip() or "Spore/sessions"
-        self.mirror_root_edit.setText(root_txt)
-        self._refresh_dir_state()
-        self.mirror_body.setVisible(self.mirror_switch.isChecked())
-
         self._ready = True
         self._sync_probe_btn()
 
@@ -543,10 +453,6 @@ class SettingsPane(QWidget):
             "proxy": self.llm.proxy,
             "fastNoThink": self.llm.fast_no_think,
             "autoVerify": self.llm.auto_verify,
-            "mirror": self.mirror_switch.isChecked(),
-            "mirrorDir": self._mirror_dir,
-            "mirrorDownloads": self.mirror_dl.isChecked(),
-            "mirrorRoot": self.mirror_root_edit.text().strip() or "Spore/sessions",
         }
 
     def _save(self):
@@ -559,38 +465,6 @@ class SettingsPane(QWidget):
     def _clear_saved_hint(self):
         if self.status.text() == "已自动保存":
             self.status.setText("")
-
-    # ---------- 磁盘镜像 ----------
-    def _mirror_toggled(self, on: bool):
-        self.mirror_body.setVisible(on)   # 主开关关掉 → ①②③ 整组隐藏
-        self._touch()
-
-    def _pick_mirror_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择静默写盘目录")
-        if not d:
-            return
-        self._mirror_dir = d
-        self._refresh_dir_state()
-        self._touch()
-
-    def _clear_mirror_dir(self):
-        self._mirror_dir = ""
-        self._refresh_dir_state()
-        self._touch()
-
-    def _refresh_dir_state(self):
-        if self._mirror_dir:
-            self.mirror_dir_state.setText(
-                f"已选：{self._mirror_dir} —— 之后静默写盘，不再弹保存对话框")
-            self.mirror_dir_state.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
-        else:
-            self.mirror_dir_state.setText("未选目录（走下面 ② 的回落）")
-            self.mirror_dir_state.setStyleSheet(HINT_STYLE)
-
-    def _mirror_root_changed(self, text: str):
-        root = text.strip() or "Spore/sessions"
-        self.mirror_echo.setText(f"最终路径：{root}/日期/标题.md · 题图.jpg")
-        self._touch()
 
     # ---------- 测试连接 ----------
     def _sync_probe_btn(self):

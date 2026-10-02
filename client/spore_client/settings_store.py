@@ -1,8 +1,9 @@
 """非敏感 UI 设置持久化：%LOCALAPPDATA%\\Spore\\ui_settings.json。
 
-对齐 MV3 options.js 的 FIELDS/CHECKS（去掉 apiKey）：
+对齐 MV3 options.js 的 FIELDS/CHECKS（去掉 apiKey；磁盘镜像是浏览器 storage
+专属件，桌面端不做，见 2026-10-02 用户拍板）：
 endpoint / model / maxToolRounds / historyLimit / proxy / fastNoThink /
-autoVerify / mirror / mirrorDir / mirrorDownloads / mirrorRoot。
+autoVerify。
 
 红线：api_key 只活在环境变量里——write() 按白名单落盘，key 永远进不了文件；
 apply_to_llm() 里环境变量显式设置过的字段必须赢过文件值。
@@ -27,7 +28,6 @@ PATH: Path = LOG_DIR.parent / "ui_settings.json"
 _FIELDS = (
     "endpoint", "model", "maxToolRounds", "historyLimit", "proxy",
     "fastNoThink", "autoVerify",
-    "mirror", "mirrorDir", "mirrorDownloads", "mirrorRoot",
 )
 
 
@@ -63,7 +63,7 @@ def _int(v) -> int | None:
 def apply_to_llm(llm: LlmSettings) -> LlmSettings:
     """把文件里的值填进 llm；环境变量显式设置过的字段必须赢。
 
-    只动 LlmSettings 的字段，绝不碰 api_key/errors，也不读写 mirror* 键。
+    只动 LlmSettings 的字段，绝不碰 api_key/errors。
     """
     d = read()
     if not d:

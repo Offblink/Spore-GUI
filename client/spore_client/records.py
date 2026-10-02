@@ -1,14 +1,20 @@
-"""搜题记录页——照 MV3 `review.html` 重设计（用户 2026-10-02 拍板）。
+"""搜题记录页——照 MV3 `review.html` 重设计（用户 2026-10-02 二轮拍板）。
 
-左栏 280px：搜索 → `全部/收藏` 分段 → `＋ 新建科目` → 分类树（点选即筛选，
-hover 出 ✎/×，右键 重命名·启停·删除）。右栏：**会话卡片**列表（★ 标题 时间
-✎ ×）+ 分页。原「科目管理」页已并入本页侧栏 —— 一页涵盖原两页。
+**左栏 280px**：搜索 → `全部/收藏` 分段 → `＋ 新建科目` → **会话列表**：
+- 分类行（hover ✎/×，右键 重命名·启停·删除）**点击 = 展开/收起**其下会话；
+- 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
+- 会话行 `★ ✎ ×`（hover 才显）+ 标题 + `MM-DD HH:mm`，点行 = 右栏显示内容；
+- `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
+
+**右栏 = 选中会话的内容区**：标题 + ★ 收藏 + 状态/时间小字 + 截图（点击用
+系统默认程序打开）+ markdown 消息流；未选中时右侧居中提示，零记录给引导文案。
 
 纪律（MV3 design.md / 用户拍板）：
-- **收藏只标记不置顶**：列表恒为最新在前，「只看收藏」交给分段筛选。
+- 一次 `articles(page=1, size=200)` 拉全量（后端 size 上限 200），分组/关键词/
+  收藏全在客户端过滤，**无分页 footer**（MV3 同样没有分页）。
 - 星标用字符 `★` + 自给 color，**绝不用 `⭐`**（系统 emoji 渲染色不可控）。
 - 行内按钮 hover 才显，点按钮不顺手打开会话（各自独立 widget，天然不冒泡）。
-- **思考（reason）不渲染**：详情里 think 字段直接丢弃。
+- **思考（reason/think）不渲染**：消息流里 think 字段直接丢弃。
 - 所有网络请求走 QThread（`_QueryTask`），主线程不发请求。
 """
 
@@ -18,8 +24,14 @@ import json
 import re
 
 import markdown
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QEnterEvent, QPixmap
+from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QEnterEvent,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -36,17 +48,16 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     CaptionLabel,
     FluentIcon,
+    InfoBar,
+    InfoBarPosition,
     MessageBox,
-    PrimaryPushButton,
-    PushButton,
     SearchLineEdit,
-    StrongBodyLabel,
     ToolButton,
 )
 
 from .api import ApiClient, ApiError, NetworkError
 
-PAGE_SIZE = 20
+FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
 ACCENT = "#ec4899"
 
 STATUS_LABEL = {
@@ -142,26 +153,30 @@ class _InputDialog(QDialog):
         return dlg.edit.text().strip() if dlg.exec() == QDialog.Accepted else None
 
 
-# ---------------------------------------------------------------- 会话卡片
+# ---------------------------------------------------------------- 会话行（左栏）
 class SessionCard(QFrame):
-    """MV3 review.html:50-83 + review.js:71-133 行解剖。"""
+    """MV3 review.html:50-83 + review.js:71-133 行剖：★ 标题 时间 ✎ ×。
 
-    opened = Signal(str)                 # 点行 → 看详情
+    左栏列表里的一行；`depth>0` 表示挂在科目行下（缩进一层）。
+    """
+
+    opened = Signal(str)                 # 点行 → 右栏显示内容
     renameRequested = Signal(str, str)   # id, 标题
     deleteRequested = Signal(str, str)   # id, 标题
     favToggled = Signal(str, bool)       # id, 当前 fav
     contextRequested = Signal(str, object)  # id, QCursor.globalPos()
 
-    def __init__(self, row: dict, parent=None):
+    def __init__(self, row: dict, depth: int = 0, parent=None):
         super().__init__(parent)
         self.setObjectName("sessionCard")
         self._id = str(row.get("id", ""))
         self._title = str(row.get("title", "") or "新会话")
         self._fav = bool(row.get("fav"))
+        self._sel = False
 
         h = QHBoxLayout(self)
-        h.setContentsMargins(10, 9, 10, 9)
-        h.setSpacing(10)
+        h.setContentsMargins(10 + depth * 14, 7, 8, 7)
+        h.setSpacing(9)
 
         self.star = QPushButton("★")  # U+2605，字符+color，绝不用 ⭐
         self.star.setFixedSize(24, 24)
@@ -171,11 +186,11 @@ class SessionCard(QFrame):
             lambda: self.favToggled.emit(self._id, self._fav))
 
         col = QVBoxLayout()
-        col.setSpacing(3)
+        col.setSpacing(2)
         col.setContentsMargins(0, 0, 0, 0)
         self.title_lbl = QLabel(self._title)
         self.title_lbl.setStyleSheet(
-            "QLabel{font-size:14px; color:#2b2f4a; background:transparent;}")
+            "QLabel{font-size:13.5px; color:#2b2f4a; background:transparent;}")
         self.title_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.time_lbl = QLabel(_fmt_stamp(row.get("updateTime")))
         self.time_lbl.setStyleSheet(
@@ -216,20 +231,34 @@ class SessionCard(QFrame):
         self._fav = fav
         self._apply()
 
+    def set_selected(self, on: bool):
+        self._sel = on
+        self._apply()
+
     def _apply(self):
-        bg = "#fff9ea" if self._fav else "transparent"
+        if self._sel:
+            bg, hover = "#ffeef7", "#ffe4f1"   # 选中：右栏正看这条
+        elif self._fav:
+            bg, hover = "#fff9ea", "#f5f7fd"   # 收藏行底
+        else:
+            bg, hover = "transparent", "#f5f7fd"
         self.setStyleSheet(
             f"QFrame#sessionCard{{background:{bg}; border-radius:12px;}}"
-            "QFrame#sessionCard:hover{background:#f5f7fd;}")
-        star_fg = "#ec4899" if self._fav else "#b3b8cd"
+            f"QFrame#sessionCard:hover{{background:{hover};}}")
+        star_fg = ACCENT if self._fav else "#b3b8cd"
         self.star.setStyleSheet(
             f"QPushButton{{background:transparent; border:none;"
-            f" color:{star_fg}; font-size:17px; border-radius:6px;}}"
+            f" color:{star_fg}; font-size:16px; border-radius:6px;}}"
             "QPushButton:hover{color:#db2777;}")
-        # 收藏常显，未收藏 hover 才显（MV3 review.html:60-69）
-        self.star.setVisible(self._fav or self._hover)
+        # 收藏/选中常显，其余 hover 才显（MV3 review.html:60-69）
+        self.star.setVisible(self._fav or self._sel or self._hover)
         for btn in (self.rename_btn, self.del_btn):
-            btn.setVisible(self._hover)
+            btn.setVisible(self._hover or self._sel)
+        title_fg = "#c2185b" if self._sel else "#2b2f4a"
+        title_w = "600" if self._sel else "normal"
+        self.title_lbl.setStyleSheet(
+            f"QLabel{{font-size:13.5px; color:{title_fg}; font-weight:{title_w};"
+            " background:transparent;}")
         self.rename_btn.setStyleSheet(
             "QPushButton{background:transparent; border:none; font-size:14px;"
             " color:#a3a8c2; border-radius:6px;}"
@@ -248,11 +277,15 @@ class SessionCard(QFrame):
         super().mousePressEvent(ev)
 
 
-# ---------------------------------------------------------------- 分类行
+# ---------------------------------------------------------------- 分类行（左栏）
 class CatRow(QFrame):
-    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎/×。"""
+    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎/×。
 
-    selected = Signal(str, str)            # id, name（id 空串=全部科目）
+    与 MV3 同语义：**点击 = 展开/收起该科目下的会话**（selected 信号即展开请求，
+    展开态记在 RecordsPane._expanded 里，不改右栏内容）。
+    """
+
+    selected = Signal(str, str)            # id, name → 请求展开/收起
     renameRequested = Signal(str, str)
     deleteRequested = Signal(str, str)
     statusRequested = Signal(str, int)     # id, 目标 status(1/0)
@@ -315,7 +348,7 @@ class CatRow(QFrame):
         super().leaveEvent(ev)
 
     def _apply(self):
-        if self._sel:
+        if self._sel:   # 展开中（沿用选中底色，MV3 .sub.open）
             bg, fg = "#ffeef7", "#c2185b"
         elif self._status != 1:
             bg, fg = "transparent", "#a3a8c2"
@@ -357,17 +390,23 @@ class CatRow(QFrame):
         super().mousePressEvent(ev)
 
 
-# ---------------------------------------------------------------- 详情
+# ---------------------------------------------------------------- 消息流 / 截图
 def _detail_html(art: dict) -> str:
-    """content.messages → markdown HTML（不渲染 think；截图另用 QPixmap 展示）。"""
-    content = art.get("content") or {}
-    msgs = content.get("messages") if isinstance(content, dict) else content
-    if isinstance(content, str):
-        try:
-            content = json.loads(content)
-            msgs = content.get("messages", [])
-        except (ValueError, TypeError):
-            msgs = [{"role": "?", "text": content}]
+    """content.messages → markdown HTML（不渲染 think；截图在右栏单独展示）。
+
+    列表 VO 直接带 `messages[]`（后端 toVo 直接带），详情接口包在 `content`
+    里（dict 或 JSON 字符串）——两种形状都吃。
+    """
+    msgs = art.get("messages")
+    if not isinstance(msgs, list):
+        content = art.get("content") or {}
+        msgs = content.get("messages") if isinstance(content, dict) else content
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+                msgs = content.get("messages", [])
+            except (ValueError, TypeError):
+                msgs = [{"role": "?", "text": content}]
     parts: list[str] = []
     for m in msgs or []:
         if not isinstance(m, dict):
@@ -402,11 +441,14 @@ def _detail_html(art: dict) -> str:
                         ' padding:3px 8px; color:#7b81a0; font-size:13px;'
                         f' margin-bottom:4px;">⌕ {_md(str(t))}</div>')
                 blk.append("</div>")
-            if m.get("verifyRan") or m.get("verifySkipped"):
+            if (m.get("verifyRan") or m.get("verifySkipped")
+                    or m.get("verifyPending")):
                 verdict = str(m.get("verifyVerdict") or "")
                 note = m.get("verifyNote") or ""
                 if m.get("verifySkipped"):
                     kind_c, txt_c, chip = "#f1f2f8", "#7b81a0", "⏭ 已跳过 · 初答自评确定"
+                elif not m.get("verifyRan"):
+                    kind_c, txt_c, chip = "#f1f2f8", "#7b81a0", "⏳ 待核实"
                 elif verdict == "FIX":
                     kind_c, txt_c, chip = "#ffeced", "#d02747", "❌ 初答有误"
                 else:
@@ -450,53 +492,42 @@ def _attachment_file(art: dict) -> str:
     return ""
 
 
-class DetailDialog(QDialog):
-    """MV3 review 右栏历史的只读版：截图 + markdown 消息流。"""
+class _ClickableLabel(QLabel):
+    """可点 QLabel：截图点击 → 系统默认程序打开（不做自绘放大层）。"""
 
-    def __init__(self, art: dict, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(str(art.get("title") or "详情"))
-        self.setStyleSheet("QDialog{background:#ffffff;}")
-        self.resize(760, 680)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(22, 18, 22, 16)
-        root.setSpacing(10)
-        head = QHBoxLayout()
-        title = StrongBodyLabel(str(art.get("title") or "详情"))
-        head.addWidget(title, 1)
-        meta = CaptionLabel(
-            f"{STATUS_LABEL.get(art.get('status', ''), art.get('status', ''))}"
-            f" · {_fmt_stamp(art.get('updateTime'))}")
-        head.addWidget(meta)
-        root.addLayout(head)
+    clicked = Signal()
 
-        shot = _attachment_file(art)
-        if shot:
-            pm = QPixmap(shot)
-            if not pm.isNull():
-                lab = QLabel()
-                lab.setAlignment(Qt.AlignCenter)
-                lab.setPixmap(pm.scaled(680, 260, Qt.KeepAspectRatio,
-                                        Qt.SmoothTransformation))
-                lab.setStyleSheet("border:1px solid #e6e8f2;"
-                                  " border-radius:12px; background:#f7f8fc;")
-                root.addWidget(lab)
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(ev)
 
-        body = QTextBrowser()
-        body.setOpenExternalLinks(True)
-        body.setHtml(
-            '<div style="font-size:15px; line-height:1.6; color:#1a1d2e;">'
-            f"{_detail_html(art)}</div>")
-        body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
-        root.addWidget(body, 1)
 
-        close = PrimaryPushButton("关闭")
-        close.setFixedWidth(120)
-        close.clicked.connect(self.accept)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(close)
-        root.addLayout(row)
+class _ElidedLabel(QLabel):
+    """单行标题：超宽右侧省略号（右栏会话标题用）。"""
+
+    def __init__(self, text: str = "", color: str = "#1a1d2e", parent=None):
+        super().__init__(text, parent)
+        self._color = color
+        self.setStyleSheet(
+            f"QLabel{{font-size:15px; font-weight:600; color:{self._color};"
+            " background:transparent;}")
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        return QSize(min(hint.width(), 340), hint.height())
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(60, hint.height())
+
+    def paintEvent(self, ev):
+        painter = QPainter(self)
+        painter.setPen(QColor(self._color))
+        text = self.fontMetrics().elidedText(self.text(), Qt.ElideRight,
+                                             self.width())
+        painter.drawText(self.rect(),
+                         int(Qt.AlignLeft | Qt.AlignVCenter), text)
 
 
 # ---------------------------------------------------------------- 主页面
@@ -505,20 +536,22 @@ class RecordsPane(QWidget):
         super().__init__(parent)
         self.setObjectName("recordsPage")  # FluentWindow.addSubInterface 要求非空
         self.api = api
-        self.page = 1
         self.keyword = ""
-        self.category_id = ""
-        self.fav = 0                      # 0=全部 1=只看收藏
-        self.rows: list[dict] = []
+        self.fav = 0                      # 0=全部 1=只看收藏（分段）
+        self.rows: list[dict] = []        # 一次拉全量（size=FETCH_SIZE）的原始列表
+        self.current_id = ""              # 右栏正在看的会话
         self._task: _QueryTask | None = None
         self._cats: list[dict] = []
-        self._cat_rows: list[CatRow] = []
+        self._expanded: set[str] = set()  # 展开中的科目 id（点分类行翻转）
+        self._session_cards: list[SessionCard] = []
+        self._shot_path = ""
+        self._shot_pm = QPixmap()
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ---------- 左栏 ----------
+        # ---------- 左栏：搜索 + 分段 + 新建科目 + 会话列表 ----------
         side = QFrame()
         side.setObjectName("sidebar")
         side.setFixedWidth(280)
@@ -545,12 +578,14 @@ class RecordsPane(QWidget):
         for b in (self.seg_all, self.seg_fav):
             b.setFixedHeight(28)
             b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _=False, fav=b is self.seg_fav:
-                              self._set_seg(fav))
+        self.seg_all.clicked.connect(lambda: self._set_seg(False))
+        self.seg_fav.clicked.connect(lambda: self._set_seg(True))
         sh.addWidget(self.seg_all)
         sh.addWidget(self.seg_fav)
         sv.addWidget(seg)
 
+        cat_row = QHBoxLayout()
+        cat_row.setSpacing(8)
         self.new_cat_btn = QPushButton("＋ 新建科目")
         self.new_cat_btn.setCursor(Qt.PointingHandCursor)
         self.new_cat_btn.setStyleSheet(
@@ -560,85 +595,96 @@ class RecordsPane(QWidget):
             "QPushButton:hover{background:#ffeef7; border-color:#ec4899;"
             " color:#ec4899;}")
         self.new_cat_btn.clicked.connect(self._new_category)
-        sv.addWidget(self.new_cat_btn)
-
-        cat_scroll = QScrollArea()
-        cat_scroll.setWidgetResizable(True)
-        cat_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._cat_box_widget = QWidget()
-        self._cat_box = QVBoxLayout(self._cat_box_widget)
-        self._cat_box.setContentsMargins(0, 0, 0, 0)
-        self._cat_box.setSpacing(2)
-        self._cat_box.addStretch(1)
-        cat_scroll.setWidget(self._cat_box_widget)
-        sv.addWidget(cat_scroll, 1)
-
-        # ---------- 右栏 ----------
-        main = QFrame()
-        main.setObjectName("mainBox")
-        main.setStyleSheet("#mainBox{background:#f7f8fc;}")
-        mv = QVBoxLayout(main)
-        mv.setContentsMargins(18, 14, 18, 12)
-        mv.setSpacing(10)
-
-        head = QHBoxLayout()
-        self.filter_lbl = StrongBodyLabel("全部科目")
-        head.addWidget(self.filter_lbl, 1)
         self.refresh_btn = ToolButton(FluentIcon.SYNC)
         self.refresh_btn.setToolTip("刷新")
         self.refresh_btn.clicked.connect(self.reload)
-        head.addWidget(self.refresh_btn)
-        mv.addLayout(head)
+        cat_row.addWidget(self.new_cat_btn, 1)
+        cat_row.addWidget(self.refresh_btn)
+        sv.addLayout(cat_row)
 
-        list_scroll = QScrollArea()
-        list_scroll.setWidgetResizable(True)
-        list_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        list_scroll.setStyleSheet("QScrollArea{background:transparent;"
+        tree_scroll = QScrollArea()
+        tree_scroll.setWidgetResizable(True)
+        tree_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tree_scroll.setStyleSheet("QScrollArea{background:transparent;"
                                   " border:none;}")
-        self._list_widget = QWidget()
-        self._list_widget.setStyleSheet("QWidget{background:transparent;}")
-        self._list_box = QVBoxLayout(self._list_widget)
-        self._list_box.setContentsMargins(0, 0, 0, 0)
-        self._list_box.setSpacing(4)
-        self.empty_lbl = QLabel("还没有搜题记录。\n回网页按 Alt+S 截一道题。")
-        self.empty_lbl.setStyleSheet(
-            "QLabel{color:#a3a8c2; font-size:13.5px; background:transparent;"
-            " padding:40px 0;}")
-        self.empty_lbl.setAlignment(Qt.AlignCenter)
-        self._list_box.addWidget(self.empty_lbl)
-        self._list_box.addStretch(1)
-        list_scroll.setWidget(self._list_widget)
-        mv.addWidget(list_scroll, 1)
+        self._tree_widget = QWidget()
+        self._tree_widget.setStyleSheet("QWidget{background:transparent;}")
+        self._tree_box = QVBoxLayout(self._tree_widget)
+        self._tree_box.setContentsMargins(0, 0, 0, 0)
+        self._tree_box.setSpacing(2)
+        self._tree_box.addStretch(1)
+        tree_scroll.setWidget(self._tree_widget)
+        sv.addWidget(tree_scroll, 1)
 
-        foot = QHBoxLayout()
-        foot.addStretch(1)
-        self.prev = PushButton("上一页")
-        self.page_label = CaptionLabel("第 1 页")
-        self.next = PushButton("下一页")
-        self.prev.clicked.connect(lambda: self._go(-1))
-        self.next.clicked.connect(lambda: self._go(1))
-        foot.addWidget(self.prev)
-        foot.addWidget(self.page_label)
-        foot.addWidget(self.next)
-        foot.addStretch(1)
-        mv.addLayout(foot)
+        # ---------- 右栏：选中会话的内容区 ----------
+        self.main_box = QFrame()
+        self.main_box.setObjectName("mainBox")
+        self.main_box.setStyleSheet("#mainBox{background:#f7f8fc;}")
+        mv = QVBoxLayout(self.main_box)
+        mv.setContentsMargins(20, 14, 20, 12)
+        mv.setSpacing(10)
+
+        self.hint_lbl = QLabel("还没有搜题记录。\n回软件按 Alt+S 截一道题。")
+        self.hint_lbl.setStyleSheet(
+            "QLabel{color:#a3a8c2; font-size:14px; background:transparent;"
+            " padding:40px 0;}")
+        self.hint_lbl.setAlignment(Qt.AlignCenter)
+        mv.addWidget(self.hint_lbl, 1)
+
+        self.detail_box = QWidget()
+        self.detail_box.setObjectName("detailBox")
+        dv = QVBoxLayout(self.detail_box)
+        dv.setContentsMargins(0, 0, 0, 0)
+        dv.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.title_lbl = _ElidedLabel("")
+        self.meta_lbl = CaptionLabel("")
+        self.star_btn = QPushButton("★")   # U+2605 + 自给 color，绝不用 ⭐
+        self.star_btn.setFixedSize(28, 28)
+        self.star_btn.setCursor(Qt.PointingHandCursor)
+        self.star_btn.clicked.connect(self._star_clicked)
+        head.addWidget(self.title_lbl, 1)
+        head.addWidget(self.meta_lbl)
+        head.addWidget(self.star_btn)
+        dv.addLayout(head)
+
+        self.shot_lbl = _ClickableLabel()
+        self.shot_lbl.setAlignment(Qt.AlignCenter)
+        self.shot_lbl.setCursor(Qt.PointingHandCursor)
+        self.shot_lbl.setToolTip("点击用系统默认程序打开")
+        self.shot_lbl.setStyleSheet(
+            "border:1px solid #e6e8f2; border-radius:12px;"
+            " background:#f7f8fc;")
+        self.shot_lbl.clicked.connect(self._open_shot)
+        self.shot_lbl.hide()
+        dv.addWidget(self.shot_lbl)
+
+        self.body = QTextBrowser()
+        self.body.setOpenExternalLinks(True)
+        self.body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
+        dv.addWidget(self.body, 1)
+
+        mv.addWidget(self.detail_box, 1)
+        self.detail_box.hide()
 
         root.addWidget(side)
-        root.addWidget(main, 1)
+        root.addWidget(self.main_box, 1)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if not self._shot_pm.isNull():   # 窗口尺寸变了重裁截图
+            self._scale_shot()
 
     # ---------- 数据 ----------
     def reload(self):
+        """一次拉全量（size=200 上限），分组/过滤全在客户端做。"""
         if self._task is not None and self._task.isRunning():
             return
-        self.page_label.setText("加载中…")
-        params: dict = {
-            "page": self.page, "size": PAGE_SIZE,
-            "keyword": self.keyword or None,
-            # 收藏视图平铺，不叠分类筛选（MV3 review.js:173-196）
-            "category_id": None if self.fav else (self.category_id or None),
-            "fav": 1 if self.fav else None,
-        }
-        self._task = _QueryTask(self.api, params, self)
+        if self._current_row() is None:
+            self.hint_lbl.setText("加载中…")
+        self._task = _QueryTask(self.api, {"page": 1, "size": FETCH_SIZE}, self)
         self._task.ok.connect(self._on_rows)
         self._task.failed.connect(self._on_error)
         self._task.start()
@@ -649,19 +695,28 @@ class RecordsPane(QWidget):
             self._cats = _flatten(self.api.category_tree() or [])
         except (ApiError, NetworkError):
             self._cats = []  # 拿不到不阻断列表
-        self._render_cats()
+        self._render_tree()
 
     def _on_rows(self, data: dict):
         self.rows = data.get("list", [])
-        total = data.get("total", 0)
-        pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-        self.page_label.setText(f"第 {self.page} / {pages} 页 · 共 {total} 条")
-        self._render_rows()
+        ids = {str(r.get("id")) for r in self.rows}
+        if self.current_id not in ids:
+            self.current_id = ""
+        self._render_tree()
+        row = self._current_row()
+        if row is not None:
+            self._render_detail(row)
+        self._update_hint()
 
     def _on_error(self, msg: str):
-        self.page_label.setText(f"加载失败：{msg}")
+        self._err(f"加载失败：{msg}")
+        self._update_hint()
 
-    # ---------- 渲染 ----------
+    def _err(self, msg: str):
+        InfoBar.error("操作失败", msg, parent=self, duration=3200,
+                      position=InfoBarPosition.TOP)
+
+    # ---------- 左栏渲染：科目行 + 会话行 ----------
     def _clear_box(self, box: QVBoxLayout, keep_stretch: bool = True):
         while box.count():
             item = box.takeAt(0)
@@ -672,96 +727,194 @@ class RecordsPane(QWidget):
         if keep_stretch:
             box.addStretch(1)
 
-    def _render_rows(self):
-        self._clear_box(self._list_box)
-        self.empty_lbl = QLabel(
-            "没有收藏的会话。\n点行内 ★ 收藏，这里只留收藏的。" if self.fav
-            else "还没有搜题记录。\n回网页按 Alt+S 截一道题。")
-        self.empty_lbl.setStyleSheet(
-            "QLabel{color:#a3a8c2; font-size:13.5px; background:transparent;"
-            " padding:40px 0;}")
-        self.empty_lbl.setAlignment(Qt.AlignCenter)
-        if not self.rows:
-            self._list_box.insertWidget(0, self.empty_lbl)
-            self.empty_lbl.show()
-            return
-        for row in self.rows:
-            card = SessionCard(row)
-            card.opened.connect(self._show_detail)
-            card.renameRequested.connect(self._rename_session)
-            card.deleteRequested.connect(self._delete_session)
-            card.favToggled.connect(self._toggle_fav)
-            card.contextRequested.connect(self._card_menu)
-            self._list_box.insertWidget(self._list_box.count() - 1, card)
+    @staticmethod
+    def _tree_hint(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setStyleSheet(
+            "QLabel{color:#a3a8c2; font-size:12.5px; background:transparent;"
+            " padding:14px 6px;}")
+        return lab
 
-    def _render_cats(self):
-        self._clear_box(self._cat_box)
-        self._cat_rows = []
-        all_row = CatRow("", "全部科目", 0)
-        all_row.set_selected(not self.category_id)
-        all_row.selected.connect(lambda _i, _n: self._pick_category(""))
-        self._cat_box.insertWidget(self._cat_box.count() - 1, all_row)
+    def _filtered(self) -> list[dict]:
+        """客户端过滤：关键词（标题）+ 收藏分段。"""
+        kw = self.keyword.lower()
+        out: list[dict] = []
+        for r in self.rows:
+            if self.fav and not r.get("fav"):
+                continue
+            if kw and kw not in str(r.get("title") or "").lower():
+                continue
+            out.append(r)
+        return out
+
+    def _add_session(self, art: dict, depth: int):
+        card = SessionCard(art, depth)
+        card.set_selected(str(art.get("id")) == self.current_id)
+        card.opened.connect(self._select_session)
+        card.renameRequested.connect(self._rename_session)
+        card.deleteRequested.connect(self._delete_session)
+        card.favToggled.connect(self._toggle_fav)
+        card.contextRequested.connect(self._card_menu)
+        self._tree_box.insertWidget(self._tree_box.count() - 1, card)
+        self._session_cards.append(card)
+
+    def _render_tree(self):
+        """左栏列表：科目行（展开时挂会话）+ 未分类会话殿后；收藏视图平铺。"""
+        self._clear_box(self._tree_box)
+        self._session_cards = []
+        rows = self._filtered()
+
+        if self.fav:   # 收藏视图平铺，不摆科目（MV3 review.js:173-196）
+            if not rows:
+                self._tree_box.insertWidget(
+                    self._tree_box.count() - 1,
+                    self._tree_hint("没有收藏的会话。\n点行内 ★ 收藏，"
+                                    "这里只留收藏的。"))
+            for art in rows:
+                self._add_session(art, 0)
+            return
+
+        if not rows and not self._cats:
+            self._tree_box.insertWidget(
+                self._tree_box.count() - 1,
+                self._tree_hint("还没有搜题记录。\n回软件按 Alt+S 截一道题。"))
+            return
+
+        cat_ids = {str(c["id"]) for c in self._cats}
+        grouped: dict[str, list[dict]] = {}
+        loose: list[dict] = []          # 未分类（categoryId 空/已失效）
+        for art in rows:
+            cid = str(art.get("categoryId") or "")
+            if cid and cid in cat_ids:
+                grouped.setdefault(cid, []).append(art)
+            else:
+                loose.append(art)
+
         for c in self._cats:
-            row = CatRow(str(c["id"]), c["name"], c["depth"],
+            cid = str(c["id"])
+            opened = cid in self._expanded
+            row = CatRow(cid, str(c["name"]), int(c["depth"]),
                          int(c.get("status", 1) or 1))
-            row.set_selected(self.category_id == str(c["id"]))
-            row.selected.connect(self._pick_category)
+            row.set_selected(opened)     # 展开中高亮（沿用选中底色）
+            row.selected.connect(self._toggle_expand)
             row.renameRequested.connect(self._rename_category)
             row.deleteRequested.connect(self._delete_category)
             row.statusRequested.connect(self._toggle_category)
-            self._cat_box.insertWidget(self._cat_box.count() - 1, row)
-            self._cat_rows.append(row)
+            self._tree_box.insertWidget(self._tree_box.count() - 1, row)
+            if opened:
+                members = grouped.get(cid) or []
+                if not members:
+                    self._tree_box.insertWidget(self._tree_box.count() - 1,
+                                                self._tree_hint("（空）"))
+                for art in members:
+                    self._add_session(art, int(c["depth"]) + 1)
 
-    def _sync_cat_selection(self):
-        for row in self._cat_rows:
-            row.set_selected(self.category_id == row._id)
-        if self._cat_box.count():
-            first = self._cat_box.itemAt(0).widget()
-            if isinstance(first, CatRow):
-                first.set_selected(not self.category_id)
+        for art in loose:   # 未分类会话排在所有科目行之后（顶层）
+            self._add_session(art, 0)
 
-    # ---------- 交互：分段 / 检索 / 分页 ----------
+    # ---------- 右栏渲染：选中会话 ----------
+    def _current_row(self) -> dict | None:
+        if not self.current_id:
+            return None
+        for r in self.rows:
+            if str(r.get("id")) == self.current_id:
+                return r
+        return None
+
+    def _update_hint(self):
+        if self._current_row() is not None:
+            self.hint_lbl.hide()
+            self.detail_box.show()
+            return
+        self.detail_box.hide()
+        self.hint_lbl.setText(
+            "还没有搜题记录。\n回软件按 Alt+S 截一道题。" if not self.rows
+            else "左侧选一条会话查看内容")
+        self.hint_lbl.show()
+
+    def _render_detail(self, art: dict):
+        self.title_lbl.setText(str(art.get("title") or "新会话"))
+        status = str(art.get("status") or "")
+        self.meta_lbl.setText(
+            f"{STATUS_LABEL.get(status, status)} · {_fmt_stamp(art.get('updateTime'))}")
+        self._sync_star()
+        # 截图：本地图等比缩放（最大高 320），点击用系统默认程序打开
+        self._shot_path = _attachment_file(art)
+        self._shot_pm = QPixmap(self._shot_path) if self._shot_path else QPixmap()
+        if self._shot_pm.isNull():
+            self.shot_lbl.clear()
+            self.shot_lbl.hide()
+        else:
+            self._scale_shot()
+            self.shot_lbl.show()
+        # 消息流：markdown HTML（think 绝不渲染）
+        self.body.setHtml(
+            '<div style="font-size:15px; line-height:1.6; color:#1a1d2e;">'
+            f"{_detail_html(art)}</div>")
+        self.body.verticalScrollBar().setValue(0)
+
+    def _scale_shot(self):
+        if self._shot_pm.isNull():
+            return
+        avail = self.width() - 324       # 280 左栏 + 右栏左右留白
+        if avail < 200:                  # 还没布局好 → 兜底宽度
+            avail = 860
+        self.shot_lbl.setPixmap(
+            self._shot_pm.scaled(avail, 320, Qt.KeepAspectRatio,
+                                 Qt.SmoothTransformation))
+
+    def _open_shot(self):
+        if self._shot_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._shot_path))
+
+    def _sync_star(self):
+        on = bool((self._current_row() or {}).get("fav"))
+        fg = ACCENT if on else "#b3b8cd"
+        self.star_btn.setStyleSheet(
+            f"QPushButton{{background:transparent; border:none; color:{fg};"
+            " font-size:18px; border-radius:6px;}"
+            "QPushButton:hover{background:#f1f3fb; color:#db2777;}")
+        self.star_btn.setToolTip("取消收藏" if on else "收藏此会话")
+
+    def _star_clicked(self):
+        row = self._current_row()
+        if row is not None:
+            self._toggle_fav(str(row.get("id")), bool(row.get("fav")))
+
+    # ---------- 交互：分段 / 检索 / 展开 ----------
     def _set_seg(self, fav: bool):
         self.fav = 1 if fav else 0
-        self.page = 1
         for btn, on in ((self.seg_all, not fav), (self.seg_fav, fav)):
             bg = "#ffffff" if on else "transparent"
             fg = "#14162a" if on else "#4a5070"
             btn.setStyleSheet(
                 f"QPushButton{{background:{bg}; color:{fg}; border:none;"
                 " border-radius:8px; font-size:13px; font-weight:600;}")
-        self._sync_cat_selection()
-        self.reload()
+        self._render_tree()
 
     def _do_search(self):
         self.keyword = self.search.text().strip()
-        self.page = 1
-        self.reload()
+        self._render_tree()
 
-    def _pick_category(self, cat_id: str, _name: str = ""):
-        self.category_id = cat_id
-        if self.fav:
-            self._set_seg(False)
+    def _toggle_expand(self, cat_id: str, _name: str = ""):
+        """分类行点击 = 展开该科目下的会话，再点 = 收起（不改右栏内容）。"""
+        if cat_id in self._expanded:
+            self._expanded.discard(cat_id)
+        else:
+            self._expanded.add(cat_id)
+        self._render_tree()
+
+    # ---------- 会话：选中 / 重命名 / 删除 / 收藏 / 移动 ----------
+    def _select_session(self, art_id: str):
+        row = next((r for r in self.rows if str(r.get("id")) == art_id), None)
+        if row is None:
             return
-        self.page = 1
-        self.filter_lbl.setText(
-            next((c["name"] for c in self._cats if str(c["id"]) == cat_id),
-                 "全部科目"))
-        self._sync_cat_selection()
-        self.reload()
-
-    def _go(self, delta: int):
-        self.page = max(1, self.page + delta)
-        self.reload()
-
-    # ---------- 会话：详情 / 重命名 / 删除 / 收藏 / 移动 ----------
-    def _show_detail(self, art_id: str):
-        try:
-            art = self.api.article(art_id)
-        except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"详情失败：{e}")
-            return
-        DetailDialog(art, self.window()).exec()
+        self.current_id = art_id
+        for card in self._session_cards:
+            card.set_selected(card._id == art_id)
+        self._render_detail(row)
+        self._update_hint()
 
     def _rename_session(self, art_id: str, title: str):
         new = _InputDialog.get_text("重命名会话", title, self.window())
@@ -771,7 +924,7 @@ class RecordsPane(QWidget):
             self.api.update_article(art_id, title=new)
             self.reload()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"重命名失败：{e}")
+            self._err(f"重命名失败：{e}")
 
     def _delete_session(self, art_id: str, title: str):
         box = MessageBox("删除这个会话？",
@@ -783,23 +936,23 @@ class RecordsPane(QWidget):
             self.api.delete_article(art_id)
             self.reload()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"删除失败：{e}")
+            self._err(f"删除失败：{e}")
 
     def _toggle_fav(self, art_id: str, cur: bool):
         try:
             self.api.update_article(art_id, fav=0 if cur else 1)
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"收藏失败：{e}")
+            self._err(f"收藏失败：{e}")
             return
         # 乐观更新 + toast（MV3 review.js:261-268）；收藏不重排
         for row in self.rows:
             if str(row.get("id")) == art_id:
                 row["fav"] = 0 if cur else 1
-        for i in range(self._list_box.count()):
-            w = self._list_box.itemAt(i).widget()
-            if isinstance(w, SessionCard) and w._id == art_id:
-                w.set_fav(not cur)
-        from qfluentwidgets import InfoBar, InfoBarPosition
+        for card in self._session_cards:
+            if card._id == art_id:
+                card.set_fav(not cur)
+        if art_id == self.current_id:
+            self._sync_star()
         InfoBar.success("已收藏" if not cur else "已取消收藏",
                         "会话列表里会标出这颗星" if not cur else "已取消标记",
                         parent=self, duration=2200,
@@ -811,21 +964,23 @@ class RecordsPane(QWidget):
         menu = QMenu(self)
         move = menu.addMenu("移动到科目")
         for c in self._cats:
-            act = move.addAction(c["label"])
+            act = move.addAction(str(c["name"]))
             act.triggered.connect(
-                lambda _=False, cid=c["id"], aid=art_id: self._move(aid, cid))
+                lambda _=False, cid=str(c["id"]), aid=art_id: self._move(aid, cid))
         menu.addAction("移出科目（未分组）",
                        lambda aid=art_id: self._move(aid, ""))
         menu.exec(pos if hasattr(pos, "x") else self.mapToGlobal(pos))
 
     def _move(self, art_id: str, cat_id: str):
         try:
-            self.api.update_article(art_id,
-                                    category_id=cat_id or None) if cat_id \
-                else self.api.update_article(art_id, category_id="")
+            if cat_id:
+                self.api.update_article(art_id, category_id=cat_id)
+            else:
+                self.api.update_article(art_id, category_id="")
+            self.load_categories()   # 分组变了：科目树 + 列表都重画
             self.reload()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"移动失败：{e}")
+            self._err(f"移动失败：{e}")
 
     # ---------- 分类：新建 / 重命名 / 启停 / 删除 ----------
     def _new_category(self):
@@ -836,7 +991,7 @@ class RecordsPane(QWidget):
             self.api.create_category(name)
             self.load_categories()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"新建失败：{e}")
+            self._err(f"新建失败：{e}")
 
     def _rename_category(self, cat_id: str, name: str):
         new = _InputDialog.get_text("重命名科目", name, self.window())
@@ -846,14 +1001,14 @@ class RecordsPane(QWidget):
             self.api.rename_category(cat_id, new)
             self.load_categories()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"改名失败：{e}")
+            self._err(f"改名失败：{e}")
 
     def _toggle_category(self, cat_id: str, status: int):
         try:
             self.api.change_category_status(cat_id, status)
             self.load_categories()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"启停失败：{e}")
+            self._err(f"启停失败：{e}")
 
     def _delete_category(self, cat_id: str, name: str):
         box = MessageBox("删除这个科目？",
@@ -863,17 +1018,14 @@ class RecordsPane(QWidget):
             return
         try:
             self.api.delete_category(cat_id)
-            if self.category_id == cat_id:
-                self.category_id = ""
-                self.filter_lbl.setText("全部科目")
-                self.page = 1
+            self._expanded.discard(cat_id)
             self.load_categories()
             self.reload()
         except (ApiError, NetworkError) as e:
-            self.page_label.setText(f"删除失败：{e}")
+            self._err(f"删除失败：{e}")
 
     def contextMenuEvent(self, ev):
-        # 兼容旧行为：无卡片命中时不做事（移动已挂到卡片右键）
+        # 兼容旧行为：无会话行命中时不做事（移动已挂到会话行右键）
         super().contextMenuEvent(ev)
 
 

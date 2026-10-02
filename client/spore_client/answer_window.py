@@ -1,8 +1,10 @@
 """回答浮窗——照 MV3 `src/content/drawer.js` 重设计（用户 2026-10-02 拍板）。
 
-结构自上而下：标题条（标题·状态药丸·×）→ 题目截图 → 初答 → 工具调用（每条一行）
-→ 核实框（chip + markdown 正文）→ 追问输入（↑ 发送 · 🚫 中止）。
+结构自上而下：标题条（💬 会话列表 · ★ 收藏 · 标题·状态药丸·×）→ 题目截图 → 初答
+→ 工具调用（每条一行）→ 核实框（chip + markdown 正文）→ 追问输入（↑ 发送 · 🚫 中止）。
 追问**追加**在下方，不覆盖初答（同 MV3 renderMsgs 语义）。
+用户自己发的追问（`chat-start.text` / 截屏补充）画成用户气泡（MV3 `.utext`：
+纯文本不走 markdown、底 `#f2f4fb`）。
 
 纪律：
 - **不渲染思考**：`think-delta` 一律忽略（用户点名整个应用抛弃 reason 内容；
@@ -19,11 +21,13 @@ Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；新截屏
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import markdown
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -35,10 +39,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import PrimaryPushButton, StrongBodyLabel
+from qfluentwidgets import InfoBar, InfoBarPosition, PrimaryPushButton, StrongBodyLabel
 
 from .answer.engine import AgentEngine
 from .answer.settings import LlmSettings
+from .api import ApiError, NetworkError
 from .log import get_logger
 
 LOG = get_logger()
@@ -62,6 +67,50 @@ _CHIP = {"skip": ("#f1f2f8", "#7b81a0"), "fix": ("#ffeced", "#d02747"),
 # chip 文案照抄 MV3 drawer.js:686-693
 _CHIP_TEXT = {"skip": "⏭ 已跳过 · 初答自评确定", "fix": "❌ 初答有误",
               "ok": "✅ 与初答一致", "pending": "⏳ 待核实"}
+
+_PLACEHOLDER = "接着问…（Enter 发送）"
+_HIST_PLACEHOLDER = "历史会话（只读）· 按 Alt+S 开始新题"
+
+
+def _fmt_stamp(value) -> str:
+    """MV3 review.js:37-42 fmtStamp → `MM-DD HH:mm`。"""
+    s = str(value or "")
+    return s[5:16] if len(s) >= 16 else s[:16]
+
+
+def _star_style(fav: bool, size: int = 14) -> str:
+    """★ 必须自给 color（字形本身无上色）：收藏粉 / 未收藏灰，hover #db2777。"""
+    base = "#ec4899" if fav else "#b3b8cd"
+    return (f"QPushButton{{background:transparent; border:none; color:{base};"
+            f" font-size:{size}px; border-radius:6px;}}"
+            "QPushButton:hover{background:#ffeef7; color:#db2777;}")
+
+
+def _msgs_of(article: dict) -> list:
+    """ArticleVO.messages（后端 toVo 顶层直带）；兼容详情 content.messages/JSON 串。"""
+    msgs = article.get("messages")
+    if isinstance(msgs, list):
+        return msgs
+    content = article.get("content")
+    if isinstance(content, dict):
+        msgs = content.get("messages")
+        return msgs if isinstance(msgs, list) else []
+    if isinstance(content, str):
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return []
+        msgs = data.get("messages") if isinstance(data, dict) else None
+        return msgs if isinstance(msgs, list) else []
+    return []
+
+
+def _existing_file(raw: str) -> str:
+    """路径存在才返回（历史题图找不到文件就不显示）。"""
+    if not raw:
+        return ""
+    p = Path(raw)
+    return str(p) if p.is_file() else ""
 
 
 def _md_html(text: str) -> str:
@@ -101,7 +150,10 @@ def _no_head(no: object) -> str:
     return f"第{digits}题 " if digits else ""
 
 
-def _mini_btn(text: str, tip: str) -> QPushButton:
+def _mini_btn(text: str, tip: str, accent: bool = True) -> QPushButton:
+    """顶栏小按钮。默认 accent hover（#ffeef7/#ec4899，同 MV3 💬/★）；
+    关闭 × 与中止 🚫 传 accent=False 保留危险红 hover。"""
+    hover_bg, hover_fg = ("#ffeef7", "#ec4899") if accent else ("#fdecef", "#d02747")
     b = QPushButton(text)
     b.setToolTip(tip)
     b.setFixedSize(30, 30)
@@ -109,8 +161,8 @@ def _mini_btn(text: str, tip: str) -> QPushButton:
     b.setStyleSheet(
         "QPushButton{background:transparent; border:none; font-size:15px;"
         " color:#a3a8c2; border-radius:6px;}"
-        "QPushButton:hover{background:#fdecef; color:#d02747;"
-        " border-radius:6px;}")
+        f"QPushButton:hover{{background:{hover_bg}; color:{hover_fg};"
+        " border-radius:6px;}}")
     return b
 
 
@@ -118,6 +170,25 @@ def _sec_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setStyleSheet("QLabel{color:#9aa0bb; font-size:11.5px; font-weight:600;}")
     return lab
+
+
+class _SessionsTask(QThread):
+    """💬 列表取数走后台线程（主线程不发网络请求）。"""
+
+    ok = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, api, parent=None):
+        super().__init__(parent)
+        self.api = api
+
+    def run(self):
+        try:
+            data = self.api.articles(page=1, size=60)
+            rows = data.get("list", []) if isinstance(data, dict) else []
+            self.ok.emit(list(rows))
+        except (ApiError, NetworkError) as e:
+            self.failed.emit(str(e))
 
 
 class AnswerWindow(QWidget):
@@ -130,6 +201,10 @@ class AnswerWindow(QWidget):
                          | Qt.Tool)
         self._drag_pos = None
         self._engine: AgentEngine | None = None
+        self._api = None                      # attach_api() 注入，未注入则安全跳过
+        self._current_article_id: str | None = None
+        self._current_fav = False
+        self._readonly = False                # 正在看历史会话（追问禁用）
         self._blocks: list[dict] = []   # 追加式消息块（widget + 数据都在里面）
         self._cur: dict | None = None   # 正在流式的块
         self._dirty: set[int] = set()   # 待重渲的块（id）
@@ -147,7 +222,13 @@ class AnswerWindow(QWidget):
         self.status = QLabel("")
         self.status.setStyleSheet(_STATUS_OK)
         self.status.setVisible(False)
-        self.close_btn = _mini_btn("×", "关闭（Alt+Z 可再呼出）")
+        # MV3 drawer.js:255-263 顶栏顺序：💬 会话 · ★ 收藏 · 标题 · 状态 · ×
+        self.sessions_btn = _mini_btn("💬", "会话列表")
+        self.fav_btn = _mini_btn("★", "收藏")
+        self.fav_btn.setStyleSheet(_star_style(False))
+        self.close_btn = _mini_btn("×", "关闭（Alt+Z 可再呼出）", accent=False)
+        bar.addWidget(self.sessions_btn)
+        bar.addWidget(self.fav_btn)
         bar.addWidget(self.title, 1)
         bar.addWidget(self.status)
         bar.addWidget(self.close_btn)
@@ -192,9 +273,12 @@ class AnswerWindow(QWidget):
 
         self.resize(460, 560)
         self.close_btn.clicked.connect(self.hide)
+        self.sessions_btn.clicked.connect(self._toggle_sessions)
+        self.fav_btn.clicked.connect(self._toggle_fav)
         self.send_btn.clicked.connect(self._send)
         self.input.returnPressed.connect(self._send)
         self.cancel_btn.clicked.connect(self._cancel)
+        self._build_sessions_popup()
 
     # ---------- 拖拽 ----------
     def mousePressEvent(self, ev):
@@ -221,6 +305,8 @@ class AnswerWindow(QWidget):
             self.move(*place_near(sel, self.width(), self.height(),
                                   screen.width(), screen.height()))
         self._show_shot(image_path)
+        if supplement:
+            self._append_user(supplement)  # 截屏补充也画成用户气泡
         self.show()
         self.raise_()
         self.activateWindow()
@@ -261,6 +347,10 @@ class AnswerWindow(QWidget):
             if self._cur is not None:
                 self._on_verify(self._cur, ev)
         elif t == "chat-start":
+            text = str(ev.get("text") or "")
+            if text:
+                # 用户自己发的那条：先画气泡，再画助理回复（MV3 顺序）
+                self._append_user(text)
             self._cur = self._append_block("chat")
             self._cur["text"] = ""
             self._dirty.add(id(self._cur))
@@ -321,11 +411,20 @@ class AnswerWindow(QWidget):
         self._blocks_box.addStretch(1)
 
     def _append_block(self, kind: str) -> dict:
-        """建一个消息块 widget，插在 stretch 之前（MV3 .msg.bot 左粉竖条）。"""
+        """建一个消息块 widget，插在 stretch 之前。
+
+        assistant 块 = MV3 `.msg.bot` 左粉竖条；user 块 = `.utext` 气泡（无竖条）。
+        """
         frame = QFrame()
-        frame.setObjectName("msgBlock")
-        frame.setStyleSheet(
-            "#msgBlock{border-left:3px solid #ec4899; padding:2px 0 2px 12px;}")
+        if kind == "user":
+            frame.setObjectName("userBubble")
+            frame.setStyleSheet(
+                "#userBubble{background:#f2f4fb; border-radius:12px;}")
+        else:
+            frame.setObjectName("msgBlock")
+            frame.setStyleSheet(
+                "#msgBlock{border-left:3px solid #ec4899;"
+                " padding:2px 0 2px 12px;}")
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -333,7 +432,8 @@ class AnswerWindow(QWidget):
         b: dict = {"kind": kind, "frame": frame, "tools_box": None,
                    "verify_frame": None, "chip": None, "note": None,
                    "verify_btn": None, "ans_lbl": None, "why_lbl": None,
-                   "text_lbl": None, "err_lbl": None, "tools": [],
+                   "text_lbl": None, "user_lbl": None, "err_lbl": None,
+                   "tools": [],
                    "ans": "", "why": "", "text": "", "no": "", "title": "",
                    "err": "", "verify": None, "verify_on": False,
                    "placeholder": False}
@@ -361,13 +461,23 @@ class AnswerWindow(QWidget):
             b["verify_frame"], b["chip"], b["note"] = self._make_verify()
             b["verify_frame"].setVisible(False)
             lay.addWidget(b["verify_frame"])
-        else:  # chat：MV3 drawer.js:1012-1018 tools 排在正文之前
+        elif kind == "chat":  # MV3 drawer.js:1012-1018 tools 排在正文之前
             b["tools_box"] = QVBoxLayout()
             b["tools_box"].setSpacing(4)
             lay.addLayout(b["tools_box"])
             lay.addWidget(_sec_label("追问"))
             b["text_lbl"] = self._md_label()
             lay.addWidget(b["text_lbl"])
+        else:  # user 气泡：MV3 div.utext —— 纯文本，不走 markdown
+            lay.setContentsMargins(10, 8, 10, 8)
+            b["user_lbl"] = QLabel()
+            b["user_lbl"].setWordWrap(True)
+            b["user_lbl"].setTextFormat(Qt.TextFormat.PlainText)
+            b["user_lbl"].setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse)
+            b["user_lbl"].setStyleSheet(
+                "QLabel{color:#1a1d2e; font-size:14.5px; background:transparent;}")
+            lay.addWidget(b["user_lbl"])
 
         b["err_lbl"] = QLabel("")
         b["err_lbl"].setWordWrap(True)
@@ -538,10 +648,12 @@ class AnswerWindow(QWidget):
                 blk["why_lbl"].setVisible(True)
             else:
                 blk["why_lbl"].setVisible(False)
-        else:
+        elif blk["kind"] == "chat":
             blk["text_lbl"].setText(
                 _md_div(str(blk.get("text") or ""), "#14172a", 15)
                 if blk.get("text") else "")
+        elif blk["user_lbl"] is not None:  # 用户气泡：纯文本
+            blk["user_lbl"].setText(str(blk.get("text") or ""))
 
     def _paint_err(self, blk: dict):
         if blk.get("err"):
@@ -567,10 +679,252 @@ class AnswerWindow(QWidget):
         self.status.setVisible(False)
         self.status.setStyleSheet(_STATUS_OK)
         self.input.clear()
+        self._set_readonly(False)
+        self._current_article_id = None   # 新题未落库前 ★ 没有对象
+        self._current_fav = False
+        self._sync_fav_btn()
+        if getattr(self, "_pop", None) is not None:
+            self._pop.setVisible(False)
         self._reset_layout()
+
+    # ---------- 会话：💬 列表 / ★ 收藏 / 历史只读 ----------
+    def attach_api(self, api) -> None:
+        """主窗 ctor 调；💬 列表与 ★ 收藏要打后端。未注入时相关路径安全跳过。"""
+        self._api = api
+
+    def set_current_article(self, article_id: str | None,
+                            fav: bool = False) -> None:
+        """落库后主窗调（传后端 id 与收藏态）；开新题时主窗传 None。"""
+        self._current_article_id = article_id or None
+        self._current_fav = bool(fav)
+        self._sync_fav_btn()
+
+    def _sync_fav_btn(self):
+        self.fav_btn.setStyleSheet(_star_style(self._current_fav))
+        self.fav_btn.setToolTip("取消收藏" if self._current_fav else "收藏")
+
+    def _toast(self, ok: bool, title: str, content: str, ms: int = 2200):
+        fn = InfoBar.success if ok else InfoBar.warning
+        fn(title, content, parent=self, duration=ms,
+           position=InfoBarPosition.TOP)
+
+    def _toggle_fav(self):
+        if self._api is None or not self._current_article_id:
+            self._toast(False, "还没有会话", "先按 Alt+S 截一道题，落库后才能收藏")
+            return
+        want = 0 if self._current_fav else 1
+        try:
+            self._api.update_article(self._current_article_id, fav=want)
+        except (ApiError, NetworkError) as e:
+            self._toast(False, "收藏失败", str(e), 2600)
+            return
+        self._current_fav = want == 1
+        self._sync_fav_btn()
+        self._toast(True, "已收藏" if self._current_fav else "已取消收藏",
+                    "会话列表里会标出这颗星" if self._current_fav else "已取消标记")
+
+    def _set_readonly(self, on: bool):
+        """看历史会话时禁追问——引擎无法接管外部会话，硬发会串到别的会话上。"""
+        self._readonly = on
+        self.input.setEnabled(not on)
+        self.send_btn.setEnabled(not on)
+        self.input.setPlaceholderText(
+            _HIST_PLACEHOLDER if on else _PLACEHOLDER)
+
+    def _append_user(self, text: str) -> dict:
+        blk = self._append_block("user")
+        blk["text"] = str(text)
+        self._paint(blk)
+        return blk
+
+    # ---- 💬 会话列表浮层（MV3 drawer #listpop：点外/Esc/再点 💬 关闭） ----
+    def _build_sessions_popup(self):
+        self._pop = QFrame(self)
+        self._pop.setObjectName("sessionPop")
+        self._pop.setStyleSheet(
+            "#sessionPop{background:#ffffff; border:1px solid #e6e8f2;"
+            " border-radius:16px;}")
+        self._pop.setVisible(False)
+        lay = QVBoxLayout(self._pop)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(_sec_label("会话"))
+        head.addStretch(1)
+        self._pop_reload = _mini_btn("↻", "刷新列表")
+        head.addWidget(self._pop_reload)
+        lay.addLayout(head)
+        self._pop_scroll = QScrollArea()
+        self._pop_scroll.setWidgetResizable(True)
+        self._pop_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        host = QWidget()
+        host.setStyleSheet("QWidget{background:transparent;}")
+        self._pop_box = QVBoxLayout(host)
+        self._pop_box.setContentsMargins(0, 0, 0, 0)
+        self._pop_box.setSpacing(2)
+        self._pop_box.addStretch(1)
+        self._pop_scroll.setWidget(host)
+        lay.addWidget(self._pop_scroll, 1)
+        self._pop_reload.clicked.connect(self._load_sessions)
+        self._sess_task: _SessionsTask | None = None
+
+    def _toggle_sessions(self):
+        if self._pop.isVisible():
+            self._pop.setVisible(False)
+            return
+        h = max(180, min(int(self.height() * 0.64), 420))
+        self._pop.setGeometry(12, 44, max(220, self.width() - 24), h)
+        self._pop.raise_()
+        self._pop.setVisible(True)
+        self._load_sessions()
+
+    def _load_sessions(self):
+        if self._api is None:
+            self._render_sessions([], "未连接后端")
+            return
+        if self._sess_task is not None and self._sess_task.isRunning():
+            return
+        self._sess_task = _SessionsTask(self._api, self)
+        self._sess_task.ok.connect(self._render_sessions)
+        self._sess_task.failed.connect(lambda m: self._render_sessions([], m))
+        self._sess_task.start()
+
+    def _clear_pop_box(self):
+        while self._pop_box.count():
+            item = self._pop_box.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+        self._pop_box.addStretch(1)
+
+    def _render_sessions(self, rows: list, err: str = ""):
+        self._clear_pop_box()
+        if err or not rows:
+            tip = QLabel(err or "还没有会话\n按 Alt+S 框选截图提问")
+            tip.setStyleSheet("QLabel{color:#a3a8c2; font-size:13.5px;"
+                              " background:transparent;}")
+            tip.setWordWrap(True)
+            tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._pop_box.insertWidget(0, tip)
+            return
+        avail = max(120, self.width() - 24 - 16 - 78)
+        idx = self._pop_box.count() - 1
+        for art in rows:
+            self._pop_box.insertWidget(idx, self._session_row(art, avail))
+
+    def _session_row(self, art: dict, avail: int) -> QFrame:
+        f = QFrame()
+        f.setObjectName("sessRow")
+        f.setStyleSheet("#sessRow{border-radius:10px;}"
+                        "#sessRow:hover{background:#f5f7fd;}")
+        h = QHBoxLayout(f)
+        h.setContentsMargins(8, 6, 6, 6)
+        h.setSpacing(8)
+        title = str(art.get("title") or "新会话")
+        t = QLabel(QFontMetrics(QApplication.font()).elidedText(
+            title, Qt.TextElideMode.ElideRight, avail))
+        t.setStyleSheet("QLabel{color:#2b2f4a; font-size:14px;"
+                        " background:transparent;}")
+        ts = QLabel(_fmt_stamp(art.get("updateTime")))
+        ts.setStyleSheet("QLabel{color:#a3a8c2; font-size:11.5px;"
+                         " background:transparent;}")
+        star = QPushButton("★")
+        star.setFixedSize(24, 24)
+        star.setCursor(Qt.PointingHandCursor)
+        star.setStyleSheet(_star_style(bool(art.get("fav"))))
+        star.clicked.connect(
+            lambda _=False, a=art, s=star: self._row_fav(a, s))
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(t)
+        col.addWidget(ts)
+        h.addWidget(star)
+        h.addLayout(col, 1)
+        f.mousePressEvent = lambda ev, a=art: self._open_from_list(a)
+        return f
+
+    def _row_fav(self, art: dict, star: QPushButton):
+        if self._api is None:
+            return
+        want = 0 if art.get("fav") else 1
+        try:
+            self._api.update_article(str(art.get("id") or ""), fav=want)
+        except (ApiError, NetworkError) as e:
+            self._toast(False, "收藏失败", str(e), 2600)
+            return
+        art["fav"] = want
+        star.setStyleSheet(_star_style(want == 1))
+        if str(art.get("id") or "") == self._current_article_id:
+            self._current_fav = want == 1
+            self._sync_fav_btn()
+        self._toast(True, "已收藏" if want else "已取消收藏",
+                    "会话列表里会标出这颗星" if want else "已取消标记")
+
+    def _open_from_list(self, art: dict):
+        self._pop.setVisible(False)
+        self.load_history(art)
+
+    # ---- 历史只读视图 ----
+    def load_history(self, article: dict) -> None:
+        """把一条历史会话（ArticleVO，含 messages）渲染成只读块。"""
+        self._clear()
+        self._current_article_id = str(article.get("id") or "") or None
+        self._current_fav = bool(article.get("fav"))
+        self._sync_fav_btn()
+        self.title.setText(str(article.get("title") or "Spore"))
+        shot = _existing_file(str(article.get("attachmentPath") or ""))
+        if shot:
+            self._show_shot(shot)
+        msgs = _msgs_of(article)
+        for m in msgs:
+            self._add_history_msg(m)
+        self._set_readonly(True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        LOG.info("history loaded id=%s msgs=%d fav=%s",
+                 self._current_article_id, len(msgs), self._current_fav)
+
+    def _add_history_msg(self, m: dict) -> None:
+        if not isinstance(m, dict):
+            return
+        if m.get("role") == "user":
+            if m.get("text"):
+                self._append_user(m["text"])
+            return
+        kind = "answer" if m.get("kind") == "answer" else "chat"
+        blk = self._append_block(kind)
+        if kind == "answer":
+            blk.update({"no": m.get("no", ""), "title": m.get("title", ""),
+                        "ans": m.get("ans", ""), "why": m.get("why", ""),
+                        "placeholder": False})
+        else:
+            blk["text"] = m.get("text") or ""
+        for t in (m.get("tools") or []):
+            self._add_tool(blk, str(t))
+        if (m.get("verifyPending") or m.get("verifyRan")
+                or m.get("verifySkipped")):
+            if m.get("verifyPending"):
+                vk = "pending"
+            elif m.get("verifySkipped"):
+                vk = "skipped"
+            elif str(m.get("verifyVerdict") or "") == "FIX":
+                vk = "fix"
+            else:
+                vk = "ok"
+            blk["verify"] = {"kind": vk, "note": m.get("verifyNote") or "",
+                             "done": True}
+            self._paint_verify(blk)
+        self._paint(blk)
 
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key_Escape:
+            if getattr(self, "_pop", None) is not None and self._pop.isVisible():
+                self._pop.setVisible(False)  # 先关会话列表，再关才是藏窗口
+                return
             self.hide()
         else:
             super().keyPressEvent(ev)
