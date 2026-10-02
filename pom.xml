@@ -80,24 +80,7 @@
       <scope>runtime</scope>
     </dependency>
 
-    <!-- 作答内核（design/04）：与 Spore-Mobile 同款 OkHttp SSE + org.json -->
-    <dependency>
-      <groupId>com.squareup.okhttp3</groupId>
-      <artifactId>okhttp</artifactId>
-      <version>4.12.0</version>
-    </dependency>
-    <dependency>
-      <groupId>org.json</groupId>
-      <artifactId>json</artifactId>
-      <version>20240303</version>
-    </dependency>
-
-    <!-- 二维码渲染（设置页扫码配对，design/02 认证节）：纯 Java，零 native -->
-    <dependency>
-      <groupId>com.google.zxing</groupId>
-      <artifactId>core</artifactId>
-      <version>3.5.3</version>
-    </dependency>
+    <!-- 桌面客户端已迁 Python（client/），作答内核/二维码不再依赖 okhttp/json/zxing -->
 
     <dependency>
       <groupId>org.springframework.boot</groupId>
