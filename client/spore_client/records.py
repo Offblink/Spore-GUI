@@ -1,9 +1,11 @@
 """搜题记录页——照 MV3 `review.html` 重设计（用户 2026-10-02 二轮拍板）。
 
 **左栏 280px**：搜索 → `全部/收藏` 分段 → `＋ 新建科目` → **会话列表**：
-- 分类行（hover ✎/×，右键 重命名·启停·删除）**点击 = 展开/收起**其下会话；
+- 分类行（hover `✎ ⇄ ×`：改名 / 启停 / 删除）**点击 = 展开/收起**其下会话；
 - 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
-- 会话行 `★ ✎ ×`（hover 才显）+ 标题 + `MM-DD HH:mm`，点行 = 右栏显示内容；
+- 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目）+ 标题 + `MM-DD HH:mm`，
+  点行 = 右栏显示内容；
+- **无右键菜单**（2026-10-03 用户死命令：行内操作全按钮化，§8-3）；
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
 **右栏 = 选中会话的内容区**：标题 + ★ 收藏 + 状态/时间小字 + 截图（点击用
@@ -70,6 +72,18 @@ def _md(text: str) -> str:
     # 不加 math 扩展：markdown≥3.6 已移除，引用即每次渲染必抛
     return markdown.markdown(str(text or ""),
                              extensions=["fenced_code", "tables", "nl2br"])
+
+
+def _md_inline(text: str) -> str:
+    """markdown 结果只剥掉**唯一**外层 <p>——检索小票要图标与文本同一行。
+
+    `<p>` 是块级元素，`⌕ <p>检索 …</p>` 会渲成 `⌕` 独占一行、文本另起一行
+    （2026-10-03 §8-1 用户贴的分行现场）；多段时不剥，宁可保持原样。
+    """
+    out = _md(text)
+    if out.startswith("<p>") and out.endswith("</p>") and out.count("<p>") == 1:
+        return out[3:-4]
+    return out
 
 
 def _fmt_stamp(value) -> str:
@@ -155,7 +169,7 @@ class _InputDialog(QDialog):
 
 # ---------------------------------------------------------------- 会话行（左栏）
 class SessionCard(QFrame):
-    """MV3 review.html:50-83 + review.js:71-133 行剖：★ 标题 时间 ✎ ×。
+    """MV3 review.html:50-83 + review.js:71-133 行剖：★ 标题 时间 ✎ ⇄ ×。
 
     左栏列表里的一行；`depth>0` 表示挂在科目行下（缩进一层）。
     """
@@ -164,7 +178,7 @@ class SessionCard(QFrame):
     renameRequested = Signal(str, str)   # id, 标题
     deleteRequested = Signal(str, str)   # id, 标题
     favToggled = Signal(str, bool)       # id, 当前 fav
-    contextRequested = Signal(str, object)  # id, QCursor.globalPos()
+    moveRequested = Signal(str, object)  # id, ⇄ 按钮全局位置（右键菜单已废 §8-3）
 
     def __init__(self, row: dict, depth: int = 0, parent=None):
         super().__init__(parent)
@@ -191,7 +205,8 @@ class SessionCard(QFrame):
         self.title_lbl = QLabel(self._title)
         self.title_lbl.setStyleSheet(
             "QLabel{font-size:13.5px; color:#2b2f4a; background:transparent;}")
-        self.title_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 不设 TextSelectableByMouse：label 会吞掉按下事件不冒泡到 frame，
+        # 点标题开不了会话、只有点左侧空白才有反应（2026-10-03 §8-4）
         self.time_lbl = QLabel(_fmt_stamp(row.get("updateTime")))
         self.time_lbl.setStyleSheet(
             "QLabel{font-size:11.5px; color:#a3a8c2; background:transparent;}")
@@ -203,6 +218,13 @@ class SessionCard(QFrame):
         self.rename_btn.setCursor(Qt.PointingHandCursor)
         self.rename_btn.clicked.connect(
             lambda: self.renameRequested.emit(self._id, self._title))
+        self.move_btn = QPushButton("⇄")     # U+21C4：移入科目（原右键菜单按钮化）
+        self.move_btn.setFixedSize(24, 24)
+        self.move_btn.setCursor(Qt.PointingHandCursor)
+        self.move_btn.setToolTip("移入科目")
+        self.move_btn.clicked.connect(
+            lambda: self.moveRequested.emit(
+                self._id, self.move_btn.mapToGlobal(self.move_btn.rect().center())))
         self.del_btn = QPushButton("×")       # U+00D7
         self.del_btn.setFixedSize(24, 24)
         self.del_btn.setCursor(Qt.PointingHandCursor)
@@ -212,6 +234,7 @@ class SessionCard(QFrame):
         h.addWidget(self.star)
         h.addLayout(col, 1)
         h.addWidget(self.rename_btn)
+        h.addWidget(self.move_btn)
         h.addWidget(self.del_btn)
         self._hover = False
         self._apply()
@@ -252,17 +275,18 @@ class SessionCard(QFrame):
             "QPushButton:hover{color:#db2777;}")
         # 收藏/选中常显，其余 hover 才显（MV3 review.html:60-69）
         self.star.setVisible(self._fav or self._sel or self._hover)
-        for btn in (self.rename_btn, self.del_btn):
+        for btn in (self.rename_btn, self.move_btn, self.del_btn):
             btn.setVisible(self._hover or self._sel)
         title_fg = "#c2185b" if self._sel else "#2b2f4a"
         title_w = "600" if self._sel else "normal"
         self.title_lbl.setStyleSheet(
             f"QLabel{{font-size:13.5px; color:{title_fg}; font-weight:{title_w};"
             " background:transparent;}")
-        self.rename_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:14px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
+        for btn in (self.rename_btn, self.move_btn):
+            btn.setStyleSheet(
+                "QPushButton{background:transparent; border:none; font-size:14px;"
+                " color:#a3a8c2; border-radius:6px;}"
+                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
         self.del_btn.setStyleSheet(
             "QPushButton{background:transparent; border:none; font-size:15px;"
             " color:#a3a8c2; border-radius:6px;}"
@@ -272,14 +296,13 @@ class SessionCard(QFrame):
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton:
             self.opened.emit(self._id)
-        elif ev.button() == Qt.RightButton:
-            self.contextRequested.emit(self._id, ev.globalPos())
+        # 右键不再弹菜单（2026-10-03 死命令：菜单一律按钮化，§8-3）
         super().mousePressEvent(ev)
 
 
 # ---------------------------------------------------------------- 分类行（左栏）
 class CatRow(QFrame):
-    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎/×。
+    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎ ⇄ ×。
 
     与 MV3 同语义：**点击 = 展开/收起该科目下的会话**（selected 信号即展开请求，
     展开态记在 RecordsPane._expanded 里，不改右栏内容）。
@@ -308,12 +331,18 @@ class CatRow(QFrame):
         if status != 1:
             self.name_lbl.setStyleSheet(
                 "QLabel{color:#a3a8c2; background:transparent; font-size:13.5px;}")
-        self.name_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # 不设 TextSelectableByMouse：吞按下事件会让点科目名不展开（§8-4 同类）
         self.rename_btn = QPushButton("✎")
         self.rename_btn.setFixedSize(22, 22)
         self.rename_btn.setCursor(Qt.PointingHandCursor)
         self.rename_btn.clicked.connect(
             lambda: self.renameRequested.emit(self._id, self._name))
+        self.move_btn = QPushButton("⇄")   # U+21C4：原右键「停用/启用」按钮化（§8-3）
+        self.move_btn.setFixedSize(22, 22)
+        self.move_btn.setCursor(Qt.PointingHandCursor)
+        self.move_btn.clicked.connect(
+            lambda: self.statusRequested.emit(
+                self._id, 0 if self._status == 1 else 1))
         self.del_btn = QPushButton("×")
         self.del_btn.setFixedSize(22, 22)
         self.del_btn.setCursor(Qt.PointingHandCursor)
@@ -322,6 +351,7 @@ class CatRow(QFrame):
         h.addWidget(self.folder)
         h.addWidget(self.name_lbl, 1)
         h.addWidget(self.rename_btn)
+        h.addWidget(self.move_btn)
         h.addWidget(self.del_btn)
         self._apply()
 
@@ -361,12 +391,14 @@ class CatRow(QFrame):
         self.name_lbl.setStyleSheet(
             f"QLabel{{color:{fg}; background:transparent; font-size:13.5px;"
             f" font-weight:600;}}")
-        for btn in (self.rename_btn, self.del_btn):
+        for btn in (self.rename_btn, self.move_btn, self.del_btn):
             btn.setVisible(self._hover)
-        self.rename_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:13px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
+        self.move_btn.setToolTip("停用" if self._status == 1 else "启用")
+        for btn in (self.rename_btn, self.move_btn):
+            btn.setStyleSheet(
+                "QPushButton{background:transparent; border:none; font-size:13px;"
+                " color:#a3a8c2; border-radius:6px;}"
+                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
         self.del_btn.setStyleSheet(
             "QPushButton{background:transparent; border:none; font-size:14px;"
             " color:#a3a8c2; border-radius:6px;}"
@@ -375,18 +407,7 @@ class CatRow(QFrame):
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton:
             self.selected.emit(self._id, self._name)
-        elif ev.button() == Qt.RightButton:
-            self.rename_btn.setVisible(True)
-            self.del_btn.setVisible(True)
-            menu = QMenu(self)
-            menu.addAction("重命名…",
-                           lambda: self.renameRequested.emit(self._id, self._name))
-            toggled = 0 if self._status == 1 else 1
-            menu.addAction("停用" if self._status == 1 else "启用",
-                           lambda: self.statusRequested.emit(self._id, toggled))
-            menu.addAction("删除…",
-                           lambda: self.deleteRequested.emit(self._id, self._name))
-            menu.exec(ev.globalPos())
+        # 右键菜单已废（2026-10-03 死命令 §8-3）：重命名/启停/删除全在行尾按钮上
         super().mousePressEvent(ev)
 
 
@@ -439,7 +460,7 @@ def _detail_html(art: dict) -> str:
                     blk.append(
                         '<div style="background:#f6f7fc; border-radius:7px;'
                         ' padding:3px 8px; color:#7b81a0; font-size:13px;'
-                        f' margin-bottom:4px;">⌕ {_md(str(t))}</div>')
+                        f' margin-bottom:4px;">⌕ {_md_inline(str(t))}</div>')
                 blk.append("</div>")
             if (m.get("verifyRan") or m.get("verifySkipped")
                     or m.get("verifyPending")):
@@ -473,23 +494,11 @@ def _detail_html(art: dict) -> str:
                 blk.append(
                     '<div style="background:#f6f7fc; border-radius:7px;'
                     ' padding:3px 8px; color:#7b81a0; font-size:13px;'
-                    f' margin-bottom:4px;">⌕ {_md(str(t))}</div>')
+                    f' margin-bottom:4px;">⌕ {_md_inline(str(t))}</div>')
             blk.append(f'<div style="color:#14172a; font-size:15px;">'
                        f"{_md(txt)}</div></div>")
             parts.append("".join(blk))
     return "".join(parts) or '<span style="color:#a3a8c2;">（空会话）</span>'
-
-
-def _attachment_file(art: dict) -> str:
-    """attachmentPath → 本机绝对路径（题库目录内），取不到返回空串。"""
-    raw = str(art.get("attachmentPath") or "")
-    if not raw:
-        return ""
-    from pathlib import Path
-    p = Path(raw)
-    if p.is_file():
-        return str(p)
-    return ""
 
 
 class _ClickableLabel(QLabel):
@@ -755,7 +764,7 @@ class RecordsPane(QWidget):
         card.renameRequested.connect(self._rename_session)
         card.deleteRequested.connect(self._delete_session)
         card.favToggled.connect(self._toggle_fav)
-        card.contextRequested.connect(self._card_menu)
+        card.moveRequested.connect(self._move_menu)
         self._tree_box.insertWidget(self._tree_box.count() - 1, card)
         self._session_cards.append(card)
 
@@ -840,7 +849,9 @@ class RecordsPane(QWidget):
             f"{STATUS_LABEL.get(status, status)} · {_fmt_stamp(art.get('updateTime'))}")
         self._sync_star()
         # 截图：本地图等比缩放（最大高 320），点击用系统默认程序打开
-        self._shot_path = _attachment_file(art)
+        # attachmentPath 是相对题库目录的路径 → 统一走 ApiClient 解析（§8-5）
+        self._shot_path = self.api.resolve_attachment(
+            str(art.get("attachmentPath") or ""))
         self._shot_pm = QPixmap(self._shot_path) if self._shot_path else QPixmap()
         if self._shot_pm.isNull():
             self.shot_lbl.clear()
@@ -958,8 +969,12 @@ class RecordsPane(QWidget):
                         parent=self, duration=2200,
                         position=InfoBarPosition.TOP)
 
-    def _card_menu(self, art_id: str, pos):
+    def _move_menu(self, art_id: str, pos):
+        """会话行 ⇄ 按钮：在按钮下弹「移入科目」菜单（右键菜单已废，§8-3）。"""
         if not self._cats:
+            InfoBar.warning("还没有科目", "先点「＋ 新建科目」，再把会话移进去",
+                            parent=self, duration=2600,
+                            position=InfoBarPosition.TOP)
             return
         menu = QMenu(self)
         move = menu.addMenu("移动到科目")
@@ -1023,11 +1038,6 @@ class RecordsPane(QWidget):
             self.reload()
         except (ApiError, NetworkError) as e:
             self._err(f"删除失败：{e}")
-
-    def contextMenuEvent(self, ev):
-        # 兼容旧行为：无会话行命中时不做事（移动已挂到会话行右键）
-        super().contextMenuEvent(ev)
-
 
 def _flatten(nodes: list[dict], depth: int = 0) -> list[dict]:
     """分类树 → 扁平列表（带缩进层级与 status），children 键随 02 接口。"""

@@ -63,6 +63,8 @@ class Session:
     status: str = ""                # answering/verifying/searching/done/error/aborted
     messages: list[Msg] = field(default_factory=list)
     image_path: str = ""            # 本回合题图（GUI 本地路径，turn-end 时上推）
+    backend_id: str = ""            # 后端 article id：历史接续时带上，turn-end 据此
+                                    # PUT 更新而不是 POST 开新会话（§8-2）
 
     @property
     def last_user(self) -> Msg | None:

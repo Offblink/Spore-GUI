@@ -95,6 +95,19 @@ class AgentEngine:
         self._start(self._run_turn)
         return True
 
+    def load_session(self, sess: Session) -> bool:
+        """收编一条外部（历史）会话，下一条追问即在其上接续（§8-2）。
+
+        只置会话、清中止位，**不新建 worker 线程**——发消息时才开跑；
+        正在跑别的回合时不换（换会把两场对话串到一起），返回 False 由
+        调用方保持只读。turn-end 落库侧看 sess.backend_id 决定 POST/PUT。
+        """
+        if self.is_busy():
+            return False
+        self._abort.clear()
+        self.session = sess
+        return True
+
     def verify_only(self) -> bool:
         """手动核实（阶段B 单独跑）；没有可核实的回答返回 False。"""
         if self.is_busy() or self.session.last_answer is None:

@@ -3,9 +3,13 @@
 钉住的编排语义（agent.js 移植的关键分叉）：
 - <<ok>> 自检跳核实；但答案与解析打架时绝不跳（用户截图那道判断题的守卫）
 - FIX 覆盖答案行；turn-end 收尾事件必发；工具循环调 dispatch
+- load_session 收编历史会话接续追问（2026-10-03 §8-2）：忙时不换会话
 """
 
+import threading
+
 from spore_client.answer.engine import AgentEngine
+from spore_client.answer.session import Msg, Session
 from spore_client.answer.settings import LlmSettings
 
 
@@ -147,3 +151,51 @@ def test_status_lifecycle_emitted(monkeypatch):
     statuses = [e.get("status") for e in events if e["type"] == "status"]
     assert "answering" in statuses      # 读题中
     assert "verifying" in statuses      # 核实中
+
+
+# ---------- load_session：历史会话接续（2026-10-03 §8-2） ----------
+
+def test_load_session_adopts_without_spawning_worker():
+    eng = AgentEngine(_settings(), lambda ev: None)
+    eng.cancel()                        # 模拟上次回合留下的中止位
+    sess = Session(backend_id="art-9", title="历史题")
+    assert eng.load_session(sess) is True
+    assert eng.session is sess          # 置为当前会话
+    assert not eng._abort.is_set()      # 中止位清掉
+    assert not eng.is_busy()            # 收编不新建 worker——发消息才跑
+
+
+def test_followup_runs_on_adopted_session(monkeypatch):
+    fake = FakeLlm([{"content": "好的"}])
+    monkeypatch.setattr("spore_client.answer.engine.stream_chat", fake)
+    eng = AgentEngine(_settings(), lambda ev: None)
+    sess = Session(backend_id="art-9")
+    sess.messages.append(Msg(role="user", kind="answer", text="题干",
+                             hasImage=True, imagePath="gone.jpg"))
+    assert eng.load_session(sess)
+    assert eng.send_followup("再讲讲") is True
+    eng._worker.join(timeout=10)
+    assert not eng._worker.is_alive()
+    assert eng.session is sess                    # 追问没换会话
+    assert sess.backend_id == "art-9"             # 落库侧据此走 PUT
+    assert (sess.messages[-1].role, sess.messages[-1].kind) == \
+        ("assistant", "chat")                     # 回复落在收编会话里
+
+
+def test_load_session_refused_while_busy(monkeypatch):
+    gate = threading.Event()
+
+    def blocking(**kw):
+        gate.wait(5)
+        return {"content": ""}
+
+    monkeypatch.setattr("spore_client.answer.engine.stream_chat", blocking)
+    eng = AgentEngine(_settings(), lambda ev: None)
+    eng.new_capture_turn("fake.jpg")
+    assert eng.is_busy()
+    other = eng.session
+    assert eng.load_session(Session()) is False   # 忙 → 拒收（调用方只读）
+    assert eng.session is other                   # 会话没被换掉
+    gate.set()
+    eng._worker.join(timeout=10)
+    assert not eng._worker.is_alive()

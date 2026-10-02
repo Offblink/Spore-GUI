@@ -1,9 +1,10 @@
-"""place_near 纯函数：04 §四「浮窗出现在选区附近，越界钳回屏内」。
+"""place_near 纯函数 + 历史会话转 Session：04 §四定位与 2026-10-03 §8-2 接续。
 
-浮窗定位错 → 用户找不到回答面板；这里钉死贴选区与两条钳位规则。
+浮窗定位错 → 用户找不到回答面板（钉死贴选区与两条钳位规则）；
+历史会话转 Session 丢 backend_id/消息 → 追问开新会话、落库走错接口（§8-2）。
 """
 
-from spore_client.answer_window import place_near
+from spore_client.answer_window import _msgs_of, _session_from_article, place_near
 
 PANEL = (460, 560)        # AnswerWindow 默认尺寸
 SCREEN = (1493, 933)      # 本机逻辑分辨率（150% 缩放）
@@ -46,3 +47,21 @@ def test_panel_sits_fully_on_screen():
         x, y = place_near(sel, *PANEL, *SCREEN)
         assert 0 <= x <= SCREEN[0] - PANEL[0]
         assert 0 <= y <= SCREEN[1] - PANEL[1]
+
+
+# ---------- 历史会话 → 可接续 Session（2026-10-03 §8-2） ----------
+
+def test_session_from_article_carries_backend_id_and_msgs():
+    art = {"id": "20261002-abc", "title": "SQA 范围", "fav": 1,
+           "status": "done",
+           "messages": [{"role": "user", "kind": "chat", "text": "在吗",
+                         "ts": 5},
+                        {"role": "assistant", "kind": "answer", "ans": "A（对）",
+                         "tools": ["检索 SQA 定义"]},
+                        "畸形行"]}
+    sess = _session_from_article(art, _msgs_of(art))
+    assert sess.backend_id == "20261002-abc"   # turn-end 据此走 PUT 而非 POST
+    assert sess.title == "SQA 范围" and sess.fav is True
+    assert [m.role for m in sess.messages] == ["user", "assistant"]
+    assert sess.messages[0].ts == 5            # ts 是排序依据，别丢
+    assert sess.messages[1].tools == ["检索 SQA 定义"]

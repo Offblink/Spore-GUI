@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 DEFAULT_BASE = "http://127.0.0.1:8080/api"
@@ -30,6 +31,7 @@ class ApiClient:
     def __init__(self, base: str = DEFAULT_BASE):
         self.base = base.rstrip("/")
         self.token: str | None = None
+        self._storage_dir: str | None = None  # 题库目录，resolve_attachment 首查后缓存
 
     # ---------- 认证 ----------
     def login(self, username: str, password: str) -> dict:
@@ -100,10 +102,14 @@ class ApiClient:
 
     def update_article(self, article_id: str, *, title: str | None = None,
                        fav: int | None = None,
-                       category_id: str | None = None) -> Any:
+                       category_id: str | None = None,
+                       messages: list | None = None,
+                       status: str | None = None) -> Any:
         """PUT /articles/{id} 局部更新（后端 DTO 缺省=不改；仅传非 None 字段）。
 
-        会话卡片三按钮都走这条：重命名=title、收藏=fav(0/1)、移动=category_id。
+        会话卡片三按钮走这条（重命名=title、收藏=fav(0/1)、移动=category_id）；
+        历史接续回合也走这条（messages 整组 + status——后端 ArticleReq.messages
+        非 null 即重写正文，2026-10-03 §8-2）。
         """
         body: dict = {}
         if title is not None:
@@ -112,6 +118,10 @@ class ApiClient:
             body["fav"] = fav
         if category_id is not None:
             body["categoryId"] = category_id
+        if messages is not None:
+            body["messages"] = messages
+        if status is not None:
+            body["status"] = status
         return self._request("PUT", f"/articles/{article_id}", body)
 
     def delete_article(self, article_id: str) -> Any:
@@ -127,7 +137,6 @@ class ApiClient:
     def push_attachment(self, article_id: str, file_path: str) -> Any:
         """题图上推：multipart POST /sync/push-attachment（走 REST 不直连 DB）。"""
         import mimetypes
-        from pathlib import Path
         p = Path(file_path)
         boundary = "----spore" + p.stem
         ctype = mimetypes.guess_type(p.name)[0] or "image/jpeg"
@@ -161,7 +170,33 @@ class ApiClient:
         return self._request("GET", "/storage")
 
     def switch_storage(self, path: str) -> dict:
-        return self._request("PUT", "/storage", {"path": path})
+        out = self._request("PUT", "/storage", {"path": path})
+        self._storage_dir = None  # 目录换了，缓存的题库目录跟着失效
+        return out
+
+    def resolve_attachment(self, raw: str) -> str:
+        """题图路径 → 本机存在的绝对路径才返回，取不到返回空串。
+
+        attachmentPath 落库时是**相对题库目录**的路径（Article.java 注释），
+        直接 Path(raw).is_file() 必失败 → 记录页/面板截图空白（2026-10-03 §8-5）。
+        相对路径按 GET /storage 的 path 拼；目录只查一次（本机回环，首查后零开销）。
+        """
+        if not raw:
+            return ""
+        p = Path(raw)
+        if p.is_file():
+            return str(p)
+        if p.is_absolute():
+            return ""  # 绝对路径都不存在 → 别再拼题库目录
+        if self._storage_dir is None:
+            # 查失败保持 None（下次调用再试），别把失败缓存成空串
+            with suppress(ApiError, NetworkError):
+                self._storage_dir = str(
+                    (self.storage_info() or {}).get("path") or "")
+        if not self._storage_dir:
+            return ""
+        q = Path(self._storage_dir) / p
+        return str(q) if q.is_file() else ""
 
     # ---------- HTTP 底座 ----------
     def _request(self, method: str, path: str,

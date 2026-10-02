@@ -19,6 +19,7 @@ from spore_client.api import ApiClient, ApiError, NetworkError
 @pytest.fixture()
 def backend():
     state = {}  # 原地 clear/update 保引用——测试持的是同一个 dict
+    cfg = {"storage": ""}  # GET /storage 返回的题库目录（resolve_attachment 测它）
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # 静默访问日志，别污染 pytest 输出
@@ -44,7 +45,12 @@ def backend():
 
         def do_GET(self):
             self._record()
-            self._reply(200, {"code": 0, "message": "ok", "data": {"username": "tester"}})
+            if self.path.endswith("/storage"):
+                self._reply(200, {"code": 0, "message": "ok", "data": {
+                    "path": cfg["storage"], "fileCount": 1, "bytes": 3}})
+            else:
+                self._reply(200, {"code": 0, "message": "ok",
+                                  "data": {"username": "tester"}})
 
         def do_POST(self):
             self._record()
@@ -59,10 +65,16 @@ def backend():
             else:
                 self._reply(200, {"code": 0, "message": "ok", "data": "dt-1"})
 
+        def do_PUT(self):
+            self._record()
+            self._reply(200, {"code": 0, "message": "ok",
+                              "data": {"id": "a1", "fav": 0}})
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port = server.server_address[1]
-    yield SimpleNamespace(client=ApiClient(f"http://127.0.0.1:{port}/api"), last=state)
+    yield SimpleNamespace(client=ApiClient(f"http://127.0.0.1:{port}/api"),
+                          last=state, cfg=cfg)
     server.shutdown()
 
 
@@ -99,3 +111,28 @@ def test_logout_posts_empty_body(backend):
 def test_unreachable_backend_raises_network_error():
     with pytest.raises(NetworkError):
         ApiClient("http://127.0.0.1:1/api").me()  # 端口 1 必然拒绝，秒失败不等 15s
+
+
+# ---------- 历史接续落库契约（2026-10-03 §8-2） ----------
+
+def test_put_update_carries_messages_and_status(backend):
+    backend.client.update_article("a1", status="done",
+                                  messages=[{"role": "user", "text": "在吗"}])
+    assert backend.last["method"] == "PUT"
+    assert backend.last["path"] == "/api/articles/a1"
+    body = json.loads(backend.last["body"])
+    # 只带显式传的字段——后端 ArticleReq 缺省=不改，多带会误清标题/收藏
+    assert body == {"status": "done",
+                    "messages": [{"role": "user", "text": "在吗"}]}
+
+
+# ---------- 相对题图路径解析（2026-10-03 §8-5） ----------
+
+def test_resolve_attachment_joins_storage_dir(backend, tmp_path):
+    (tmp_path / "art1.jpg").write_bytes(b"jpg")
+    backend.cfg["storage"] = str(tmp_path)
+    # attachmentPath 落库是相对题库目录的路径 → 按 GET /storage 的 path 拼
+    assert backend.client.resolve_attachment(
+        "art1.jpg") == str(tmp_path / "art1.jpg")
+    assert backend.client.resolve_attachment("gone.jpg") == ""
+    assert backend.client.resolve_attachment("") == ""

@@ -179,7 +179,7 @@ class MainWindow(FluentWindow):
                 self._persist_turn()
 
     def _persist_turn(self):
-        """回合结束落库：POST /articles + 题图 push-attachment（REST 铁律）。"""
+        """回合结束落库：新回合 POST /articles，接续历史 PUT /articles/{id}。"""
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._persist_turn_sync)
 
@@ -189,21 +189,29 @@ class MainWindow(FluentWindow):
             return
         t0 = time.monotonic()
         try:
-            body = {
-                "title": sess.title,
-                "status": sess.status or "done",
-                "messages": [m.to_dict() for m in sess.messages],
-            }
-            art = self.api.create_article(body)
-            art_id = art.get("id") if isinstance(art, dict) else None
-            if art_id and sess.image_path:
-                self.api.push_attachment(art_id, sess.image_path)
+            messages = [m.to_dict() for m in sess.messages]
+            if sess.backend_id:
+                # 历史接续回合：后端 ArticleReq.messages 非 null 即重写正文（§8-2）；
+                # 接续会话不带新题图，题图只在新回合 POST 后上推
+                art = self.api.update_article(
+                    sess.backend_id, title=sess.title,
+                    status=sess.status or "done", messages=messages)
+                art_id = sess.backend_id
+            else:
+                art = self.api.create_article({
+                    "title": sess.title,
+                    "status": sess.status or "done",
+                    "messages": messages,
+                })
+                art_id = art.get("id") if isinstance(art, dict) else None
+                if art_id and sess.image_path:
+                    self.api.push_attachment(art_id, sess.image_path)
             if art_id:  # 落库后才有 id：面板 ★ 才知道收藏对象
                 self.answer_window.set_current_article(
                     art_id, bool(art.get("fav")) if isinstance(art, dict)
                     else False)
-            LOG.info("persisted turn id=%s in %.0fms", art_id,
-                     (time.monotonic() - t0) * 1000)
+            LOG.info("persisted turn id=%s put=%s in %.0fms", art_id,
+                     bool(sess.backend_id), (time.monotonic() - t0) * 1000)
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)

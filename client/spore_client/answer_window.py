@@ -39,12 +39,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import InfoBar, InfoBarPosition, PrimaryPushButton, StrongBodyLabel
+from qfluentwidgets import (
+    InfoBar,
+    InfoBarPosition,
+    MessageBox,
+    PrimaryPushButton,
+    StrongBodyLabel,
+)
 
 from .answer.engine import AgentEngine
+from .answer.session import Msg, Session
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .log import get_logger
+from .records import _InputDialog
 
 LOG = get_logger()
 
@@ -105,12 +113,29 @@ def _msgs_of(article: dict) -> list:
     return []
 
 
-def _existing_file(raw: str) -> str:
-    """路径存在才返回（历史题图找不到文件就不显示）。"""
-    if not raw:
-        return ""
-    p = Path(raw)
-    return str(p) if p.is_file() else ""
+_MSG_FIELDS = ("role", "kind", "text", "no", "title", "ans", "why",
+               "verifyVerdict", "verifyNote", "hasImage", "imagePath",
+               "verifyRan", "verifySkipped", "verifyPending", "tools", "ts")
+
+
+def _session_from_article(article: dict, msgs: list) -> Session:
+    """ArticleVO → 可接续的 Session：backend_id 带上，turn-end 落库走 PUT（§8-2）。
+
+    只搬 Msg.to_dict 会落库的字段（think 不渲染也不进上下文，不搬）；
+    缺键走 Msg 默认值，缺 role 的畸形行直接跳过。
+    """
+    sess = Session(
+        title=str(article.get("title") or "新会话"),
+        backend_id=str(article.get("id") or ""),
+        fav=bool(article.get("fav")),
+        status=str(article.get("status") or ""),
+    )
+    for m in msgs:
+        if not isinstance(m, dict) or "role" not in m:
+            continue
+        kw = {k: m[k] for k in _MSG_FIELDS if k in m and m[k] not in (None, "")}
+        sess.messages.append(Msg(**kw))
+    return sess
 
 
 def _md_html(text: str) -> str:
@@ -189,6 +214,93 @@ class _SessionsTask(QThread):
             self.ok.emit(list(rows))
         except (ApiError, NetworkError) as e:
             self.failed.emit(str(e))
+
+
+class _SessionRow(QFrame):
+    """💬 列表行：★ 标题/时间 + hover 才显的 ✎ ×（与记录页会话行同交互，§8-6）。"""
+
+    opened = Signal(object)               # art → 打开会话
+    renameRequested = Signal(object)      # art
+    deleteRequested = Signal(object)      # art
+    favToggled = Signal(object, object)   # art, row（行自己换星色）
+
+    def __init__(self, art: dict, avail: int, parent=None):
+        super().__init__(parent)
+        self._art = art
+        self.setObjectName("sessRow")
+        self.setStyleSheet("#sessRow{border-radius:10px;}"
+                           "#sessRow:hover{background:#f5f7fd;}")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(8, 6, 6, 6)
+        h.setSpacing(8)
+        title = str(art.get("title") or "新会话")
+        t = QLabel(QFontMetrics(QApplication.font()).elidedText(
+            title, Qt.TextElideMode.ElideRight, avail))
+        t.setStyleSheet("QLabel{color:#2b2f4a; font-size:14px;"
+                        " background:transparent;}")
+        ts = QLabel(_fmt_stamp(art.get("updateTime")))
+        ts.setStyleSheet("QLabel{color:#a3a8c2; font-size:11.5px;"
+                         " background:transparent;}")
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(t)
+        col.addWidget(ts)
+        self.star = QPushButton("★")
+        self.star.setFixedSize(24, 24)
+        self.star.setCursor(Qt.PointingHandCursor)
+        self.star.setStyleSheet(_star_style(bool(art.get("fav"))))
+        self.star.clicked.connect(
+            lambda: self.favToggled.emit(self._art, self))
+        self.rename_btn = QPushButton("✎")   # U+270E
+        self.rename_btn.setFixedSize(24, 24)
+        self.rename_btn.setCursor(Qt.PointingHandCursor)
+        self.rename_btn.setToolTip("重命名")
+        self.rename_btn.clicked.connect(
+            lambda: self.renameRequested.emit(self._art))
+        self.del_btn = QPushButton("×")       # U+00D7
+        self.del_btn.setFixedSize(24, 24)
+        self.del_btn.setCursor(Qt.PointingHandCursor)
+        self.del_btn.setToolTip("删除")
+        self.del_btn.clicked.connect(
+            lambda: self.deleteRequested.emit(self._art))
+        for b in (self.rename_btn, self.del_btn):
+            b.setStyleSheet(
+                "QPushButton{background:transparent; border:none; font-size:14px;"
+                " color:#a3a8c2; border-radius:6px;}"
+                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
+        self.del_btn.setStyleSheet(
+            "QPushButton{background:transparent; border:none; font-size:15px;"
+            " color:#a3a8c2; border-radius:6px;}"
+            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        h.addWidget(self.star)
+        h.addLayout(col, 1)
+        h.addWidget(self.rename_btn)
+        h.addWidget(self.del_btn)
+        self._hover = False
+        self._apply()
+
+    def set_fav(self, on: bool):
+        self.star.setStyleSheet(_star_style(on))
+
+    def enterEvent(self, ev):
+        self._hover = True
+        self._apply()
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        self._hover = False
+        self._apply()
+        super().leaveEvent(ev)
+
+    def _apply(self):
+        self.rename_btn.setVisible(self._hover)
+        self.del_btn.setVisible(self._hover)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.opened.emit(self._art)
+        super().mousePressEvent(ev)
 
 
 class AnswerWindow(QWidget):
@@ -390,11 +502,14 @@ class AnswerWindow(QWidget):
         pm = QPixmap(path)
         if pm.isNull():
             self._shot.setVisible(False)
-            return
-        avail = max(120, self.width() - 40)
-        self._shot.setPixmap(pm.scaled(avail, 200, Qt.KeepAspectRatio,
-                                       Qt.SmoothTransformation))
-        self._shot.setVisible(True)
+        else:
+            avail = max(120, self.width() - 40)
+            self._shot.setPixmap(pm.scaled(avail, 200, Qt.KeepAspectRatio,
+                                           Qt.SmoothTransformation))
+            self._shot.setVisible(True)
+        # 诊断（§8-7）：面板截图空白时先看这三列——文件没读到 / 没设上 / 没可见
+        LOG.info("shot path=%s null=%s visible=%s", path, pm.isNull(),
+                 self._shot.isVisible())
 
     def _reset_layout(self):
         while self._blocks_box.count():
@@ -724,7 +839,7 @@ class AnswerWindow(QWidget):
                     "会话列表里会标出这颗星" if self._current_fav else "已取消标记")
 
     def _set_readonly(self, on: bool):
-        """看历史会话时禁追问——引擎无法接管外部会话，硬发会串到别的会话上。"""
+        """禁追问：历史会话没被引擎收编时（引擎正忙，load_session 拒绝）才只读。"""
         self._readonly = on
         self.input.setEnabled(not on)
         self.send_btn.setEnabled(not on)
@@ -809,44 +924,18 @@ class AnswerWindow(QWidget):
             tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._pop_box.insertWidget(0, tip)
             return
-        avail = max(120, self.width() - 24 - 16 - 78)
+        # 行内预留：pop 边距 24 + 行边距 14 + ★✎× 72 + 间距 24 ≈ 150
+        avail = max(120, self.width() - 24 - 16 - 110)
         idx = self._pop_box.count() - 1
         for art in rows:
-            self._pop_box.insertWidget(idx, self._session_row(art, avail))
+            row = _SessionRow(art, avail)
+            row.opened.connect(self._open_from_list)
+            row.renameRequested.connect(self._rename_row)
+            row.deleteRequested.connect(self._delete_row)
+            row.favToggled.connect(self._row_fav)
+            self._pop_box.insertWidget(idx, row)
 
-    def _session_row(self, art: dict, avail: int) -> QFrame:
-        f = QFrame()
-        f.setObjectName("sessRow")
-        f.setStyleSheet("#sessRow{border-radius:10px;}"
-                        "#sessRow:hover{background:#f5f7fd;}")
-        h = QHBoxLayout(f)
-        h.setContentsMargins(8, 6, 6, 6)
-        h.setSpacing(8)
-        title = str(art.get("title") or "新会话")
-        t = QLabel(QFontMetrics(QApplication.font()).elidedText(
-            title, Qt.TextElideMode.ElideRight, avail))
-        t.setStyleSheet("QLabel{color:#2b2f4a; font-size:14px;"
-                        " background:transparent;}")
-        ts = QLabel(_fmt_stamp(art.get("updateTime")))
-        ts.setStyleSheet("QLabel{color:#a3a8c2; font-size:11.5px;"
-                         " background:transparent;}")
-        star = QPushButton("★")
-        star.setFixedSize(24, 24)
-        star.setCursor(Qt.PointingHandCursor)
-        star.setStyleSheet(_star_style(bool(art.get("fav"))))
-        star.clicked.connect(
-            lambda _=False, a=art, s=star: self._row_fav(a, s))
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.addWidget(t)
-        col.addWidget(ts)
-        h.addWidget(star)
-        h.addLayout(col, 1)
-        f.mousePressEvent = lambda ev, a=art: self._open_from_list(a)
-        return f
-
-    def _row_fav(self, art: dict, star: QPushButton):
+    def _row_fav(self, art: dict, row: _SessionRow):
         if self._api is None:
             return
         want = 0 if art.get("fav") else 1
@@ -856,37 +945,97 @@ class AnswerWindow(QWidget):
             self._toast(False, "收藏失败", str(e), 2600)
             return
         art["fav"] = want
-        star.setStyleSheet(_star_style(want == 1))
+        row.set_fav(want == 1)
         if str(art.get("id") or "") == self._current_article_id:
             self._current_fav = want == 1
             self._sync_fav_btn()
         self._toast(True, "已收藏" if want else "已取消收藏",
                     "会话列表里会标出这颗星" if want else "已取消标记")
 
+    def _rename_row(self, art: dict):
+        """行内 ✎ 重命名——与记录页同款对话框，成功后刷新列表（§8-6）。"""
+        if self._api is None:
+            return
+        art_id = str(art.get("id") or "")
+        title = str(art.get("title") or "新会话")
+        new = _InputDialog.get_text("重命名会话", title, self.window())
+        if not new or new == title:
+            return
+        try:
+            self._api.update_article(art_id, title=new)
+        except (ApiError, NetworkError) as e:
+            self._toast(False, "重命名失败", str(e), 2600)
+            return
+        if art_id and art_id == self._current_article_id:
+            self.title.setText(new)
+        self._load_sessions()
+
+    def _delete_row(self, art: dict):
+        """行内 × 删除——确认后刷新；删的是正看着的会话就回空面板（§8-6）。"""
+        if self._api is None:
+            return
+        art_id = str(art.get("id") or "")
+        title = str(art.get("title") or "新会话")
+        box = MessageBox("删除这个会话？",
+                         f"确定删除「{title}」吗？截图、回答与核实记录会一并"
+                         "删除，不可恢复。", self.window())
+        if not box.exec():
+            return
+        try:
+            self._api.delete_article(art_id)
+        except (ApiError, NetworkError) as e:
+            self._toast(False, "删除失败", str(e), 2600)
+            return
+        if art_id and art_id == self._current_article_id:
+            if self._engine is not None:
+                self._engine.load_session(Session())  # 引擎别再指着已删会话
+            keep = self._pop.isVisible()
+            self._clear()   # 正看着的会话被删 → 回空面板
+            if keep:
+                self._pop.setVisible(True)
+        self._load_sessions()
+
     def _open_from_list(self, art: dict):
         self._pop.setVisible(False)
         self.load_history(art)
 
-    # ---- 历史只读视图 ----
+    # ---- 历史视图（可接续，§8-2） ----
+    def _resolve_shot(self, raw: str) -> str:
+        """题图路径 → 本机存在才显示；相对路径按题库目录拼（§8-5 同根）。"""
+        if not raw:
+            return ""
+        if self._api is not None:
+            return self._api.resolve_attachment(raw)
+        p = Path(raw)  # 未接后端（纯本地路径）时也别把绝对路径丢了
+        return str(p) if p.is_file() else ""
+
     def load_history(self, article: dict) -> None:
-        """把一条历史会话（ArticleVO，含 messages）渲染成只读块。"""
+        """渲染一条历史会话，并收编给引擎——下一条追问在其上接续（§8-2）。
+
+        引擎正忙时收编失败 → 退回只读（与旧行为一致），不把两场对话串线。
+        """
         self._clear()
         self._current_article_id = str(article.get("id") or "") or None
         self._current_fav = bool(article.get("fav"))
         self._sync_fav_btn()
         self.title.setText(str(article.get("title") or "Spore"))
-        shot = _existing_file(str(article.get("attachmentPath") or ""))
+        shot = self._resolve_shot(str(article.get("attachmentPath") or ""))
         if shot:
             self._show_shot(shot)
         msgs = _msgs_of(article)
         for m in msgs:
             self._add_history_msg(m)
-        self._set_readonly(True)
+        adopted = False
+        if self._engine is not None:
+            adopted = self._engine.load_session(
+                _session_from_article(article, msgs))
+        self._set_readonly(not adopted)
         self.show()
         self.raise_()
         self.activateWindow()
-        LOG.info("history loaded id=%s msgs=%d fav=%s",
-                 self._current_article_id, len(msgs), self._current_fav)
+        LOG.info("history loaded id=%s msgs=%d fav=%s adopted=%s",
+                 self._current_article_id, len(msgs), self._current_fav,
+                 adopted)
 
     def _add_history_msg(self, m: dict) -> None:
         if not isinstance(m, dict):
