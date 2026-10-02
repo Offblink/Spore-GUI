@@ -1,0 +1,16 @@
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# E 基本错误 / F 死代码 / I 排序 / UP 新语法 / B 常见 bug / SIM 简化
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# 逐字移植件：提示词长行是源文件原貌，折行即改写语义（与 MV3 agent.js 漂移）
+"spore_client/answer/prompts.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
