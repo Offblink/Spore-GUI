@@ -154,7 +154,7 @@ class MainWindow(FluentWindow):
 
     def _engine_event(self, ev: dict):
         t = ev.get("type")
-        self.answer_window.on_event(ev)
+        # 先记日志再处理：处理阶段若致命，日志必须已经落盘（崩溃定位用）
         if t in self._DELTA_TYPES:  # 流式 delta 只计数，逐条记会把日志刷爆
             self._delta_counts[t] = self._delta_counts.get(t, 0) + 1
         elif t == "error":
@@ -163,6 +163,7 @@ class MainWindow(FluentWindow):
             extra = (ev.get("status") or ev.get("brief") or ev.get("title")
                      or "")
             LOG.info("engine event %s %s", t, extra)
+        self.answer_window.on_event(ev)
         if t == "turn-end":
             LOG.info("turn-end in %.1fs deltas=%s",
                      time.monotonic() - self._t_turn, self._delta_counts)

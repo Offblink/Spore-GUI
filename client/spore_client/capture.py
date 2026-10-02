@@ -22,7 +22,7 @@ from pathlib import Path
 import keyboard
 from PIL import Image, ImageGrab
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 from .log import get_logger
@@ -138,7 +138,7 @@ class CropOverlay(QWidget):
             p.fillRect(QRectF(sel.right(), sel.top(), r.right() - sel.right(),
                               sel.height()), "black")
             p.setOpacity(1.0)
-            pen = QPen("#00b7c3", 2)
+            pen = QPen(QColor("#00b7c3"), 2)  # PySide6：QPen(str, int) 不是合法签名
             p.setPen(pen)
             p.drawRect(sel)
             # 尺寸角标
@@ -220,7 +220,13 @@ class CaptureController:
         try:
             self._image = ImageGrab.grab(bbox=bbox)
         except OSError:
-            self._image = ImageGrab.grab()  # bbox 越界等异常时退回全屏（单屏恒等）
+            try:
+                self._image = ImageGrab.grab()  # bbox 越界等退回全屏（单屏恒等）
+            except OSError as e:
+                # 抓屏偶发失败：复位 _busy（否则热键从此哑火）并留痕，不甩异常
+                LOG.error("screen grab failed (both bbox and full): %s", e)
+                self._busy = False
+                return
         LOG.info("frame grabbed in %.0fms",
                  (time.monotonic() - self._t0) * 1000)
         ov = CropOverlay(self._image, self._logical)

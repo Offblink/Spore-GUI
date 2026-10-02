@@ -31,6 +31,9 @@ from ..answer.prompts import (
 from ..answer.session import Msg, Session
 from ..answer.settings import LlmSettings
 from ..answer.tools import TOOLS, dispatch, set_search_proxy
+from ..log import get_logger
+
+LOG = get_logger()
 
 Emit = Callable[[dict], None]
 
@@ -136,6 +139,8 @@ class AgentEngine:
         answer = Msg(role="assistant", kind="answer")
         sess.messages.append(answer)
         idx = len(sess.messages) - 1
+        LOG.info("worker: image ready (%d b64 chars), emitting answer-start",
+                 len(image))
         self._emit({"type": "answer-start", "idx": idx})
 
         api = self._api_kwargs()
@@ -159,8 +164,11 @@ class AgentEngine:
                     p["no"], p["title"], p["ans"], p["why"]
                 self._emit({"type": "answer-delta", "idx": idx, **_ans_dict(answer)})
 
+        LOG.info("worker: phaseA stream_chat begin")
         res_a = stream_chat(messages=messages, no_think=self.settings.fast_no_think,
                             on_delta=on_delta, abort=self._abort.is_set, **api)
+        LOG.info("worker: phaseA stream_chat done (%d chars)",
+                 len(res_a.get("content", "")))
         raw_a = res_a.get("content", "")
         p = parse_phase_a(raw_a)
         answer.no = p["no"] or answer.no

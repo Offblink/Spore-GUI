@@ -37,8 +37,10 @@ STATUS_TEXT = {
 
 
 def _md_html(text: str) -> str:
+    # math 扩展在 markdown≥3.6 已移除（装的是 3.9，引用即每次渲染必抛）；
+    # MV3 md.js 同样不渲染 LaTeX → 去掉保持两端语义一致
     return markdown.markdown(
-        text, extensions=["fenced_code", "tables", "nl2br", "math"])
+        text, extensions=["fenced_code", "tables", "nl2br"])
 
 
 def place_near(sel: tuple[float, float, float, float],
@@ -184,8 +186,11 @@ class AnswerWindow(QWidget):
         if t == "status":
             self.status.setText(STATUS_TEXT.get(ev.get("status", ""), ev.get("text", "")))
         elif t == "answer-start":
-            self._set_body("*读题中…*")
+            # 占位「读题中…」：先复位管线再填 pending，走 200ms 节流统一渲染
+            # （旧代码调用不存在的 _set_body，answer-start 必抛 AttributeError）
             self._start_md()
+            self._md_pending = "*读题中…*"
+            self._md_dirty = True
         elif t == "answer-delta":
             p = ev.get("preview") or ""
             why = ev.get("why", "")
