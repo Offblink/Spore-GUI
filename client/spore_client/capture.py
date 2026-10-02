@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import suppress
 from pathlib import Path
 
@@ -23,6 +24,10 @@ from PIL import Image, ImageGrab
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
+
+from .log import get_logger
+
+LOG = get_logger()
 
 MIN_W, MIN_H = 60, 40
 JPEG_LONG_EDGE = 1600
@@ -168,6 +173,7 @@ class CropOverlay(QWidget):
         if r.isEmpty():
             return
         if too_small(r.width(), r.height()):
+            LOG.info("rejected too-small %.0fx%.0f", r.width(), r.height())
             self._hint = (f"框太小 {int(r.width())}×{int(r.height())}"
                           f"（宽 ≥{MIN_W} 或 高 ≥{MIN_H} 即可），"
                           "重新拖或按 ESC 取消")
@@ -192,12 +198,15 @@ class CaptureController:
         self._image: Image.Image | None = None
         self._logical: tuple[int, int] = (0, 0)
         self._busy = False  # 框选中忽略热键（否则二次触发叠两层覆盖层）
+        self._t0 = time.monotonic()  # 热键计时基准（日志用）
 
     def start(self):
         """热键入口（Qt 主线程执行）。"""
         if self._busy:
             return
         self._busy = True
+        self._t0 = time.monotonic()
+        LOG.info("alt+s → capture start")
         screen = QApplication.instance().primaryScreen()
         self._logical = (screen.size().width(), screen.size().height())
         self._grab()
@@ -212,9 +221,11 @@ class CaptureController:
             self._image = ImageGrab.grab(bbox=bbox)
         except OSError:
             self._image = ImageGrab.grab()  # bbox 越界等异常时退回全屏（单屏恒等）
+        LOG.info("frame grabbed in %.0fms",
+                 (time.monotonic() - self._t0) * 1000)
         ov = CropOverlay(self._image, self._logical)
         ov.selected.connect(self._on_selected)
-        ov.cancelled.connect(self._close)
+        ov.cancelled.connect(self._on_cancel)
         self._overlay = ov
         ov.show()
         ov.activateWindow()  # 接 ESC
@@ -225,9 +236,20 @@ class CaptureController:
         from datetime import datetime
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         dest = CAPTURE_DIR / f"cap-{stamp}.jpg"
+        t_enc = time.monotonic()
         encode_jpeg(crop, dest)
+        LOG.info("selected %.0fx%.0f logical → %dx%d px, %s "
+                 "(encode %.0fms, total %.0fms from hotkey)",
+                 sel[2], sel[3], w, h, dest.name,
+                 (time.monotonic() - t_enc) * 1000,
+                 (time.monotonic() - self._t0) * 1000)
         self._close()
         self._on_captured(str(dest), sel)
+
+    def _on_cancel(self):
+        LOG.info("capture cancelled (esc/right-click) after %.0fms",
+                 (time.monotonic() - self._t0) * 1000)
+        self._close()
 
     def _close(self):
         if self._overlay is not None:

@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
@@ -17,13 +20,19 @@ from .answer_window import AnswerWindow
 from .api import ApiClient
 from .capture import CaptureController, HotkeyManager
 from .categories import CategoriesPane
+from .log import get_logger
 from .records import RecordsPane
 from .settings import SettingsPane
+
+LOG = get_logger()
 
 
 class MainWindow(FluentWindow):
     captureRequested = Signal()  # keyboard 钩子线程只许 emit，Qt 自动排队回主线程
     toggleAnswerRequested = Signal()  # Alt+Z 同理：钩子线程不许碰 widget
+    # 引擎事件必须走真 Signal：普通 callable 从 worker 线程直接调用 = 在 worker
+    # 线程里砸 widget（黑窗/卡顿/落库定时器建错线程的根因），AutoConnection 才会排队
+    engineEvent = Signal(object)
 
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
@@ -32,6 +41,8 @@ class MainWindow(FluentWindow):
 
         # LLM 配置先行：设置页要展示它
         self.llm_settings = load_from_env()
+        self._delta_counts: dict[str, int] = {}
+        self._t_turn = time.monotonic()  # 回合计时，_on_captured 时重置
 
         self.records = RecordsPane(api)
         self.categories = CategoriesPane(api)
@@ -46,7 +57,8 @@ class MainWindow(FluentWindow):
         self.stackedWidget.currentChanged.connect(self._on_tab_changed)
 
         # ---- 期5：作答内核 + 浮窗 + 热键 ----
-        self.engine = AgentEngine(self.llm_settings, self._engine_event)
+        self.engineEvent.connect(self._engine_event)  # 队列化到主线程
+        self.engine = AgentEngine(self.llm_settings, self.engineEvent.emit)
         self.answer_window = AnswerWindow(self.llm_settings)
         self.answer_window.attach_engine(self.engine)
         self.answer_window.followupRequested.connect(self._followup)
@@ -101,13 +113,16 @@ class MainWindow(FluentWindow):
         aw = self.answer_window
         if aw.isVisible():
             aw.hide()
+            LOG.info("alt+z → panel hidden")
         else:
             aw.show()
             aw.raise_()
+            LOG.info("alt+z → panel shown at (%d,%d)", aw.x(), aw.y())
 
     # ---------- 提示（主窗隐藏时 InfoBar 没人看得见 → 改走托盘气泡） ----------
     def _notify(self, level: str, title: str, msg: str,
                 duration: int = 6000):
+        LOG.info("notify %s/%s: %s", level, title, str(msg)[:120])
         if self.isVisible():
             (InfoBar.error if level == "error" else InfoBar.warning)(
                 title, msg, parent=self, duration=duration,
@@ -120,6 +135,10 @@ class MainWindow(FluentWindow):
     # ---------- 截屏 → 作答 ----------
     def _on_captured(self, path: str,
                      sel: tuple[float, float, float, float]):
+        self._t_turn = time.monotonic()
+        LOG.info("captured %s sel=%s ready=%s",
+                 Path(path).name, tuple(round(v) for v in sel),
+                 self.llm_settings.ready)
         if not self.llm_settings.ready:
             self._notify("error", "无法作答",
                          "缺少 LLM key，截图已存盘：" + path, 6000)
@@ -130,12 +149,26 @@ class MainWindow(FluentWindow):
         if not self.engine.send_followup(text):
             self._notify("warning", "稍等", "当前回合还没结束", 2500)
 
-    # ---------- 引擎事件（后台线程 emit → Qt 自动队列回主线程） ----------
+    # ---------- 引擎事件（worker 线程 emit → engineEvent 队列回主线程） ----------
+    _DELTA_TYPES = {"answer-delta", "chat-delta", "think-delta", "verify-delta"}
+
     def _engine_event(self, ev: dict):
+        t = ev.get("type")
         self.answer_window.on_event(ev)
-        if ev.get("type") == "turn-end" and not ev.get("error") \
-                and not ev.get("aborted"):
-            self._persist_turn()
+        if t in self._DELTA_TYPES:  # 流式 delta 只计数，逐条记会把日志刷爆
+            self._delta_counts[t] = self._delta_counts.get(t, 0) + 1
+        elif t == "error":
+            LOG.error("engine error: %s", str(ev.get("message", ""))[:200])
+        else:
+            extra = (ev.get("status") or ev.get("brief") or ev.get("title")
+                     or "")
+            LOG.info("engine event %s %s", t, extra)
+        if t == "turn-end":
+            LOG.info("turn-end in %.1fs deltas=%s",
+                     time.monotonic() - self._t_turn, self._delta_counts)
+            self._delta_counts = {}
+            if not ev.get("error") and not ev.get("aborted"):
+                self._persist_turn()
 
     def _persist_turn(self):
         """回合结束落库：POST /articles + 题图 push-attachment（REST 铁律）。"""
@@ -146,6 +179,7 @@ class MainWindow(FluentWindow):
         sess = self.engine.session
         if not any(m.role == "assistant" for m in sess.messages):
             return
+        t0 = time.monotonic()
         try:
             body = {
                 "title": sess.title,
@@ -156,7 +190,11 @@ class MainWindow(FluentWindow):
             art_id = art.get("id") if isinstance(art, dict) else None
             if art_id and sess.image_path:
                 self.api.push_attachment(art_id, sess.image_path)
+            LOG.info("persisted turn id=%s in %.0fms", art_id,
+                     (time.monotonic() - t0) * 1000)
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
+            LOG.error("persist failed in %.0fms: %s",
+                      (time.monotonic() - t0) * 1000, e)
             self._notify("warning", "落库失败", str(e), 5000)
 
     # ---------- 托盘/单例唤醒（关闭 = 收起，不是退出） ----------
@@ -182,6 +220,7 @@ class MainWindow(FluentWindow):
             ev.ignore()
             self.hide()
             self.answer_window.hide()
+            LOG.info("close → tray (hotkeys stay)")
             if not self._tray_notified:
                 self._tray_notified = True
                 self._tray.showMessage(
@@ -193,4 +232,5 @@ class MainWindow(FluentWindow):
         self._capture.shutdown()
         self.engine.cancel()
         self.answer_window.close()
+        LOG.info("really quit (hotkeys unregistered)")
         super().closeEvent(ev)

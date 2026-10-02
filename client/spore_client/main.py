@@ -3,17 +3,33 @@
 import ctypes
 import os
 import sys
+import threading
 
 from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from .api import ApiClient
+from .log import get_logger
 from .login import LoginWindow, try_device_login
 from .main_window import MainWindow
 
+LOG = get_logger()
+
 # Windows 命名管道随服务进程消亡（无残留占位）；带用户名防跨用户会话互扰
 INSTANCE_NAME = f"spore-desktop-client-{os.environ.get('USERNAME', 'default')}"
+
+
+def _install_excepthooks() -> None:
+    """未捕获异常必须留痕——pythonw 下 stderr 无处可去，没日志就等于蒸发。"""
+    def _hook(tp, val, tb):
+        LOG.error("uncaught exception", exc_info=(tp, val, tb))
+    sys.excepthook = _hook
+
+    def _th_hook(args):
+        LOG.error("thread %s crashed", args.thread.name,
+                  exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+    threading.excepthook = _th_hook
 
 
 def _wake_existing() -> None:
@@ -32,6 +48,8 @@ def _on_wake(server: QLocalServer, app: QApplication) -> None:
     if conn is not None:
         conn.close()  # 载荷不读：连上本身就是「唤醒」
     target = getattr(app, "_main", None) or getattr(app, "_login", None)
+    LOG.info("wake received: target=%s",
+             type(target).__name__ if target is not None else "none-yet")
     if target is None:
         return  # 首实例窗口还没建好——它马上就会自己 show
     if target.isMinimized():  # 最小化也要还原，光 show/raise 不够
@@ -46,14 +64,17 @@ def main() -> int:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Spore.Desktop")
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
+    _install_excepthooks()
 
     # ---- 单例：listen 抢到名字 = 首实例；抢不到 = 已有实例，通知它唤醒、本进程退 ----
     server = QLocalServer()
     server.newConnection.connect(lambda: _on_wake(server, app))
     if not server.listen(INSTANCE_NAME):
+        LOG.info("instance started: pipe held by existing instance → wake + exit")
         _wake_existing()
         return 0
     app._instance_server = server  # noqa: SLF001 — 防 GC
+    LOG.info("instance started: pipe owned")
 
     api = ApiClient()
     app._api = api  # noqa: SLF001 — 防 GC
@@ -63,6 +84,7 @@ def main() -> int:
         win.show()
         app._main = win  # noqa: SLF001
         login.close()
+        LOG.info("entered main window (login ok)")
 
     # 静默登录优先（device.token 在 → 直接进主窗）
     me = try_device_login(api)
@@ -70,12 +92,14 @@ def main() -> int:
         win = MainWindow(api)
         win.show()
         app._main = win  # noqa: SLF001
+        LOG.info("entered main window (silent login)")
         return app.exec()
 
     login = LoginWindow(api)
     login.loginSucceeded.connect(enter_main)
     app._login = login  # noqa: SLF001 — 单例唤醒要用
     login.show()
+    LOG.info("showing login window (no valid device token)")
     return app.exec()
 
 

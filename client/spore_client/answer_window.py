@@ -22,6 +22,9 @@ from qfluentwidgets import CaptionLabel, FluentIcon, PrimaryPushButton, StrongBo
 
 from .answer.engine import AgentEngine
 from .answer.settings import LlmSettings
+from .log import get_logger
+
+LOG = get_logger()
 
 STATUS_TEXT = {
     "answering": "回答中…",
@@ -69,6 +72,8 @@ class AnswerWindow(QWidget):
         self._engine: AgentEngine | None = None
         self._md_pending = ""
         self._md_dirty = False
+        self._think_pending = ""   # think-delta 与正文同走 200ms 节流——
+        self._think_dirty = False  # 逐 chunk setPlainText 是 O(n²) 卡顿源
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 12)
@@ -168,6 +173,8 @@ class AnswerWindow(QWidget):
         self.raise_()
         self.activateWindow()
         self.input.setFocus()  # 直接可追问；Esc 仍由本窗 keyPressEvent 接住隐藏
+        LOG.info("panel shown at (%d,%d) size=%dx%d sel=%s",
+                 self.x(), self.y(), self.width(), self.height(), sel)
         if self._engine is not None:
             self._engine.new_capture_turn(image_path, supplement)
 
@@ -185,10 +192,10 @@ class AnswerWindow(QWidget):
             self._md_pending = (p + ("\n\n" + why if why else ""))
             self._md_dirty = True
         elif t == "think-delta":
-            self.think_view.setPlainText(ev.get("think", ""))
-            if ev.get("think"):
-                self.think_btn.setText("▾ 思考")
-                self.think_view.setVisible(True)
+            self._think_pending = ev.get("think", "")
+            self._think_dirty = True
+            if not self._md_timer.isActive():  # 兜底：verify_only 无 answer-start
+                self._md_timer.start()
         elif t == "chat-start":
             self._start_md()
         elif t == "chat-delta":
@@ -236,6 +243,8 @@ class AnswerWindow(QWidget):
     def _start_md(self):
         self._md_pending = ""
         self._md_dirty = True
+        self._think_pending = ""
+        self._think_dirty = False
         self.body.clear()
         self.tools_label.clear()
         self.tools_label.setVisible(False)
@@ -246,6 +255,12 @@ class AnswerWindow(QWidget):
         self._md_timer.start()
 
     def _flush_md(self):
+        if self._think_dirty:
+            self._think_dirty = False
+            self.think_view.setPlainText(self._think_pending)
+            if self._think_pending:
+                self.think_btn.setText("▾ 思考")
+                self.think_view.setVisible(True)
         if not self._md_dirty:
             return
         self._md_dirty = False
@@ -283,6 +298,8 @@ class AnswerWindow(QWidget):
         self._md_timer.stop()
         self._md_pending = ""
         self._md_dirty = False
+        self._think_pending = ""
+        self._think_dirty = False
         self.title.setText("Spore 作答")
         self.status.setText("")
         self.body.clear()
