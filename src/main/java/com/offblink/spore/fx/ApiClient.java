@@ -46,8 +46,10 @@ public class ApiClient {
 
     // ---------- 认证 ----------
     public String login(String username, String password) throws Exception {
+        // R<LoginVO> 包装：token 在 data 里，不能在顶层找
         JSONObject data = post("/auth/login", new JSONObject()
-                .put("username", username).put("password", password));
+                .put("username", username).put("password", password))
+                .getJSONObject("data");
         token = data.getString("token");
         return token;
     }

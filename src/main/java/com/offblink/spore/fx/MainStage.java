@@ -68,29 +68,66 @@ public class MainStage extends Stage {
         PasswordField password = new PasswordField();
         password.setPromptText("密码");
         password.setSkin(new AsteriskSkin(password));
+        // 明文镜像字段：PasswordField 掩码关不掉(JavaFX 8 无 setEchoChar)，
+        // 可见性切换 = 在掩码/明文两个字段间换，文本双向同步
+        TextField plain = new TextField();
+        plain.setPromptText("密码");
+        plain.setVisible(false);
+        plain.setManaged(false);
+        final boolean[] revealed = {false};
         Label status = new Label();
         status.setStyle("-fx-text-fill: #d33;");
 
         Button loginBtn = new Button("登录");
         Button registerBtn = new Button("注册首个管理员");
+        // 状态即按钮：🙈=当前隐藏，点击变 👀=当前可见
+        Button eyeBtn = new Button("🙈");
         loginBtn.setDefaultButton(true);
 
         Runnable doLogin = () -> {
             status.setText("");
+            String u = username.getText();
+            String p = revealed[0] ? plain.getText() : password.getText();
             Fx.async(() -> {
-                api.login(username.getText(), password.getText());
+                api.login(u, p);
                 // 登录成功 → 轮换并存本机令牌（下次启动免输口令）
                 DeviceTokenStore.write(api.createDeviceToken());
             }, () -> setScene(buildMainScene()),
-                    e -> status.setText(e.getMessage()));
+                e -> status.setText(e.getMessage()));
         };
         loginBtn.setOnAction(e -> doLogin.run());
         password.setOnAction(e -> doLogin.run());
+        plain.setOnAction(e -> doLogin.run());
         registerBtn.setOnAction(e -> {
             status.setText("");
-            Fx.async(() -> api.register(username.getText(), password.getText()),
+            String u = username.getText();
+            String p = revealed[0] ? plain.getText() : password.getText();
+            Fx.async(() -> api.register(u, p),
                     doLogin::run,
                     ex -> status.setText(ex.getMessage()));
+        });
+        eyeBtn.setOnAction(e -> {
+            boolean show = !revealed[0];
+            if (show) {
+                plain.setText(password.getText());
+                password.setVisible(false);
+                password.setManaged(false);
+                plain.setVisible(true);
+                plain.setManaged(true);
+                plain.requestFocus();
+                plain.positionCaret(plain.getLength());
+                eyeBtn.setText("👀");
+            } else {
+                password.setText(plain.getText());
+                plain.setVisible(false);
+                plain.setManaged(false);
+                password.setVisible(true);
+                password.setManaged(true);
+                password.requestFocus();
+                password.positionCaret(password.getLength());
+                eyeBtn.setText("🙈");
+            }
+            revealed[0] = show;
         });
 
         GridPane form = new GridPane();
@@ -100,6 +137,8 @@ public class MainStage extends Stage {
         form.add(username, 1, 0);
         form.add(new Label("密码"), 0, 1);
         form.add(password, 1, 1);
+        form.add(plain, 1, 1); // 与 password 同格互斥显示(managed/visible 切换)
+        form.add(eyeBtn, 2, 1);
 
         HBox buttons = new HBox(10, loginBtn, registerBtn);
         buttons.setAlignment(Pos.CENTER);
