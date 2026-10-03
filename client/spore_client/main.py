@@ -123,7 +123,10 @@ def _ensure_backend(app: QApplication) -> str | None:
     app.aboutToQuit.connect(backend.stop)  # 关客户端 = 停自己起的那个后端
     try:
         spawned = backend.start_if_needed()
-    except BackendError as e:
+    except (BackendError, OSError) as e:
+        # OSError 也接：后端起不来的任何系统级失败（如权限）都进登录页状态栏，
+        # **绝不 uncaught 弹红叉就退出**——1.1.0 装进 Program Files 的启动即崩就是
+        # spawn_hidden 的 PermissionError 漏到这层之外（2026-10-03 用户实测「打不开」）
         LOG.error("backend start refused: %s", e)
         return str(e)
     if not spawned:

@@ -182,6 +182,41 @@ def launch_dir(jar: Path) -> Path:
     return jar.parent.parent if jar.parent.name == "target" else jar.parent
 
 
+def app_home() -> Path:
+    """应用可写根：``SPORE_HOME`` 可整体重定向，缺省 ``%LOCALAPPDATA%\\Spore``
+    （与 log.py / settings_store / capture / login 同一根，同一套约定）。"""
+    return Path(os.environ.get(
+        "SPORE_HOME", Path.home() / "AppData" / "Local" / "Spore"))
+
+
+def _writable(d: Path) -> bool:
+    """就地建删探针。Windows 上比 ``os.access`` 靠谱：装进 Program Files 的
+    非管理员进程必吃 WinError 5，探针一次就现形；成功路径无残留。"""
+    probe = d / ".spore-write-probe"
+    try:
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def runtime_base(jar_dir: Path) -> Path:
+    """后端的 cwd 与控制台日志根：jar 目录**可写就沿用**（开发态/便携目录语义不变）；
+    不可写 → :meth:`app_home`。
+
+    1.1.0 实测回归：装进 ``C:\\Program Files (x86)\\...`` 后 ``spawn_hidden`` 要在 exe 旁
+    建 ``logs\\`` → ``PermissionError [WinError 5]`` 直接把客户端崩在启动 1 秒处（打不开）。
+    迁到可写根后，后端自己按 ``file:./`` 写的 ``./logs`` ``./data`` 也一并落进
+    ``%LOCALAPPDATA%\\Spore``（Spring 日志、题库目录），jar 仍按绝对路径从安装目录读。
+    """
+    if _writable(jar_dir):
+        return jar_dir
+    home = app_home()
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
 def config_args(workdir: Path) -> list[str]:
     """开发态补一条 Spring 附加配置位置；发行态返回空。
 
@@ -269,11 +304,14 @@ class EmbeddedBackend:
         return True
 
     def _spawn(self, jar: Path, java: Path) -> None:
-        workdir = launch_dir(jar)
+        # config 探测按 jar 位置（launch_dir 语义不变）；cwd/日志根走可写根——
+        # Program Files 下 exe 旁建 logs 会 WinError 5 崩启动（见 runtime_base）
+        launch = launch_dir(jar)
+        workdir = runtime_base(launch)
         log = workdir / "logs" / "backend-console.log"
         self.console_log = log
         self.proc = spawn_hidden(
-            [java, "-jar", jar.absolute(), *config_args(workdir)], workdir, log)
+            [java, "-jar", jar.absolute(), *config_args(launch)], workdir, log)
         self._job = kill_on_parent_exit(self.proc)   # 失败原因已在函数里记 errno
         LOG.info("backend spawned: pid=%s job=%s cmd='%s -jar %s' cwd=%s",
                  self.proc.pid, self._job, java, jar.name, workdir)
