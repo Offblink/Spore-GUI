@@ -11,6 +11,7 @@ from spore_client.answer.settings import LlmSettings
 from spore_client.answer_window import (
     AnswerWindow,
     _md_html,
+    _SessionRow,
     place_near,
 )
 
@@ -97,6 +98,32 @@ def test_history_verify_chip_priority_matches_records(qapp):
     blk = win._blocks[-1]
     assert blk["chip"].text() == "✅ 与初答一致"
     assert blk["verify_btn"].isHidden()          # 结果态不给核实按钮
+
+
+def test_verify_button_sits_below_verify_card(qapp):
+    # 2026-10-03 反馈：按钮在核实卡片**下方**（旧序在上方）
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    win.on_event({"type": "answer-start", "idx": 1})
+    blk = win._blocks[-1]
+    lay = blk["frame"].layout()          # 卡片/按钮在块内布局，不在窗体布局
+    frame_idx = lay.indexOf(blk["verify_frame"])
+    btn_idx = lay.indexOf(blk["verify_btn"])
+    assert 0 <= frame_idx < btn_idx
+
+
+def test_session_list_stack_newest_on_top(qapp):
+    # 2026-10-03 反馈：💬 列表像栈——最新会话在顶部、旧的往下堆
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    win._render_sessions([
+        {"id": "old", "title": "旧", "updateTime": "2026-10-01 10:00:00"},
+        {"id": "new", "title": "新", "updateTime": "2026-10-03 10:00:00"},
+    ])
+    ids = []
+    for i in range(win._pop_box.count()):
+        w = win._pop_box.itemAt(i).widget()
+        if isinstance(w, _SessionRow):
+            ids.append(w._art.get("id"))
+    assert ids == ["new", "old"]
 
 
 # ---------- 追问小节标位置（2026-10-03 反馈） ----------

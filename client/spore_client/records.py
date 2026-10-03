@@ -599,16 +599,6 @@ def _detail_html(art: dict) -> str:
                     f"{chip}</span></div>"
                     f'<div style="color:#3d4260; font-size:15px;">'
                     f"{_md(note)}</div></div>")
-                if (m.get("verifyPending") and not m.get("verifyRan")
-                        and not m.get("verifySkipped")):
-                    # 「核实一下」按钮（2026-10-03 反馈：关自动核实后没地方
-                    # 点核实）——QTextBrowser 里用锚实现，走 spore:// 协议
-                    blk.append(
-                        '<div style="margin-top:8px;"><a href="spore://verify"'
-                        ' style="background:#ec4899; color:#ffffff;'
-                        ' border-radius:10px; padding:6px 14px;'
-                        ' text-decoration:none; font-weight:600;'
-                        ' font-size:13.5px;">🔍 核实一下</a></div>')
             blk.append("</div>")
             parts.append("".join(blk))
         else:  # chat
@@ -859,12 +849,22 @@ class RecordsPane(QWidget):
         dv.addWidget(self.shot_lbl)
 
         self.body = QTextBrowser()
-        # 内链 spore:// 自己接（核实按钮锚点），外链走系统浏览器
-        self.body.setOpenLinks(False)
-        self.body.setOpenExternalLinks(False)
-        self.body.anchorClicked.connect(self._on_anchor)
+        self.body.setOpenExternalLinks(True)   # 正文外链走系统浏览器
         self.body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
         dv.addWidget(self.body, 1)
+
+        # 「核实一下」真按钮（2026-10-03 反馈：富文本画不出圆角，锚点直角丑）——
+        # 挂在消息流下方（核实卡片通常是最后一条，即紧贴其下）
+        self.verify_btn = QPushButton("🔍 核实一下")
+        self.verify_btn.setCursor(Qt.PointingHandCursor)
+        self.verify_btn.setVisible(False)
+        self.verify_btn.setStyleSheet(
+            "QPushButton{background:#f1f3fb; color:#4a4f6b; border:none;"
+            " border-radius:10px; padding:6px 14px; font-weight:600;"
+            " font-size:13.5px;}"
+            "QPushButton:hover{background:#e8ebf7;}")
+        self.verify_btn.clicked.connect(self._emit_verify)
+        dv.addWidget(self.verify_btn)
 
         # 接续对话输入行（2026-10-03 用户点名：记录页历史会话要能追问）
         # 发出后主窗把该会话收编给引擎，回答在作答浮窗流式继续，落库更新本会话
@@ -908,13 +908,18 @@ class RecordsPane(QWidget):
     def _emit_cancel(self):
         self.cancelRequested.emit()
 
-    def _on_anchor(self, url: QUrl):
-        href = url.toString()
-        if href.startswith("spore://"):
-            if href == "spore://verify" and self.current_id:
-                self.verifyRequested.emit(self.current_id)
-            return
-        QDesktopServices.openUrl(url)   # 普通链接照旧外开
+    def _emit_verify(self):
+        if self.current_id:
+            self.verifyRequested.emit(self.current_id)
+
+    @staticmethod
+    def _pending_verify(art: dict) -> bool:
+        """这条会话还有待核实的回答 → 底部按钮该亮。"""
+        for m in msgs_of(art):
+            if (isinstance(m, dict) and m.get("verifyPending")
+                    and not m.get("verifyRan") and not m.get("verifySkipped")):
+                return True
+        return False
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1116,6 +1121,7 @@ class RecordsPane(QWidget):
             bar.setValue(bar.maximum())
         else:
             bar.setValue(0)
+        self.verify_btn.setVisible(self._pending_verify(art))
 
     def _scale_shot(self):
         if self._shot_pm.isNull():

@@ -213,16 +213,22 @@ class MainWindow(FluentWindow):
     def _show_qr_popup(self):
         pop = self._qr_pop
         if pop is None:
-            # 非模态、点外部自关；半透明底 + QSS 圆角 = 外层也圆（2026-10-03）
+            # 非模态、点外部自关。半透明**外窗**只当透明画布——顶层 QSS 背景
+            # 在 translucent 下不画（2026-10-03 反馈：整窗透了、圆角也没了），
+            # 白底+圆角+描边都画在**内层卡片**上
             pop = QFrame(self, Qt.Popup | Qt.FramelessWindowHint
                          | Qt.WindowStaysOnTopHint)
             pop.setAttribute(Qt.WA_TranslucentBackground, True)
-            pop.setObjectName("qrPop")
-            pop.setStyleSheet(
-                "#qrPop{background:#ffffff; border:1px solid #e6e8f2;"
-                " border-radius:14px;}")
             pop.installEventFilter(self)
-            box = QVBoxLayout(pop)
+            card = QFrame(pop)
+            card.setObjectName("qrCard")
+            card.setStyleSheet(
+                "#qrCard{background:#ffffff; border:1px solid #e6e8f2;"
+                " border-radius:14px;}")
+            outer = QVBoxLayout(pop)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.addWidget(card)
+            box = QVBoxLayout(card)
             box.setContentsMargins(14, 12, 14, 12)
             box.setSpacing(8)
             self._qr_img = QLabel("取 token…")

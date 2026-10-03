@@ -589,19 +589,21 @@ class AnswerWindow(QWidget):
             b["tools_box"] = QVBoxLayout()
             b["tools_box"].setSpacing(4)
             lay.addLayout(b["tools_box"])
+            b["verify_frame"], b["chip"], b["note"] = self._make_verify()
+            b["verify_frame"].setVisible(False)
+            lay.addWidget(b["verify_frame"])
+            # 按钮在核实卡片**下方**（2026-10-03 反馈：旧序在卡片上面）
             b["verify_btn"] = QPushButton("🔍 核实一下")
             b["verify_btn"].setCursor(Qt.PointingHandCursor)
             b["verify_btn"].setVisible(False)
             b["verify_btn"].setStyleSheet(
                 "QPushButton{background:#f1f3fb; color:#4a4f6b; border:none;"
-                " border-radius:10px; padding:6px 14px; font-weight:600;}"
+                " border-radius:10px; padding:6px 14px; font-weight:600;"
+                " font-size:13.5px;}"
                 "QPushButton:hover{background:#e8ebf7;}")
             b["verify_btn"].clicked.connect(
                 lambda _=False, blk=b: self._do_verify(blk))
             lay.addWidget(b["verify_btn"])
-            b["verify_frame"], b["chip"], b["note"] = self._make_verify()
-            b["verify_frame"].setVisible(False)
-            lay.addWidget(b["verify_frame"])
         elif kind == "chat":  # MV3 drawer.js:1012-1018 tools 排在正文之前；
             # 「追问」小节标在用户气泡上方（chat-start/历史路径加），这里不重复
             b["tools_box"] = QVBoxLayout()
@@ -955,16 +957,21 @@ class AnswerWindow(QWidget):
             tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._pop_box.insertWidget(0, tip)
             return
+        # 栈序（2026-10-03 反馈：最新会话必须在顶部、往上堆）——
+        # 客户端按 updateTime 倒序兜底，不赌后端排序
+        rows = sorted(rows, key=lambda r: str(r.get("updateTime") or ""),
+                      reverse=True)
         # 行内预留：pop 边距 24 + 行边距 14 + ★✎× 72 + 间距 24 ≈ 150
         avail = max(120, self.width() - 24 - 16 - 110)
-        idx = self._pop_box.count() - 1
         for art in rows:
             row = _SessionRow(art, avail)
             row.opened.connect(self._open_from_list)
             row.renameRequested.connect(self._rename_row)
             row.deleteRequested.connect(self._delete_row)
             row.favToggled.connect(self._row_fav)
-            self._pop_box.insertWidget(idx, row)
+            # idx 必须每次重算（插在当前 stretch 之前）——循环前算死会把
+            # 列表整个倒序，这正是「最新会话不在顶部」的根因（2026-10-03）
+            self._pop_box.insertWidget(self._pop_box.count() - 1, row)
 
     def _row_fav(self, art: dict, row: _SessionRow):
         if self._api is None:

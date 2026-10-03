@@ -208,10 +208,23 @@ def test_protocol_markers_survive_rendering():
     assert "<ok>" not in html          # 旧现场：被当标签吞掉、「ok」二字消失
 
 
-def test_pending_verify_renders_button_anchor():
-    html = _detail_html({"messages": [
-        _answer_msg(verifyPending=True, verifyNote="点按钮开始")]})
-    assert 'href="spore://verify"' in html   # 关自动核实后有地方点核实
+def test_pending_verify_shows_real_button(qapp):
+    """富文本画不出圆角 → 按钮改真 QPushButton 挂消息流下方（2026-10-03）。"""
+    pane = _pane(qapp)
+    art = {"id": "a1", "title": "T", "messages": [
+        _answer_msg(verifyPending=True, verifyNote="点它开始")]}
+    pane.current_id = "a1"
+    pane.rows = [art]
+    pane._render_detail(art)
+    assert not pane.verify_btn.isHidden()          # 待核实 → 按钮亮
+    got: list = []
+    pane.verifyRequested.connect(got.append)
+    pane._emit_verify()
+    assert got == ["a1"]                           # 点按钮 → 带会话 id 发出
+    done = {"id": "a1", "title": "T", "messages": [
+        _answer_msg(verifyRan=True, verifyVerdict="OK")]}
+    pane._render_detail(done)
+    assert pane.verify_btn.isHidden()              # 已核实 → 按钮灭
 
 
 # ---------- 追问小节标在用户追问气泡上方 ----------
