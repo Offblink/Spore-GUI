@@ -82,3 +82,19 @@ def test_key_input_saves_without_echoing(qapp):
     # 状态句子直接做占位符（2026-10-03 反馈：并入输入框，不再单挂一行字）
     assert pane.key_edit.placeholderText() == "已设置 ✓（不回显；粘贴新值回车即覆盖）"
     assert pane._collect()["apiKey"] == "sk-new"      # 进落盘白名单
+
+
+def test_save_key_clears_startup_key_error_and_hint(qapp):
+    # 2026-10-03 用户实测：设完 API key，底部红字「API key 未设置」留到重启不消
+    llm = LlmSettings(api_key="")
+    llm.errors.append("API key 未设置——到设置页粘贴后回车保存即生效")
+    pane = _pane(_StorageApi(), llm)
+    assert pane.llm.errors, "预设：启动错误先在场"
+    assert pane._err_hint is not None, "预设：红字标签已建并被引用"
+
+    pane.key_edit.setText("sk-new-key")
+    pane._save_key()
+
+    assert llm.api_key == "sk-new-key"
+    assert not any("API key" in e for e in llm.errors)
+    assert pane._err_hint is None, "撤下的标签引用一并清空"

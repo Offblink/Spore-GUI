@@ -131,7 +131,7 @@ class MainWindow(FluentWindow):
         self._quitting = False
         self._tray_notified = False
         tray = QSystemTrayIcon(app_icon(), self)
-        tray.setToolTip("Spore 搜题——双击打开，右键退出")
+        tray.setToolTip("Spore 搜题——单击打开，右键退出")
         self._tray_menu = QMenu()  # 防 GC
         self._tray_menu.addAction("打开主界面", self._show_main)
         self._tray_menu.addAction("退出 Spore", self._really_quit)
@@ -439,7 +439,7 @@ class MainWindow(FluentWindow):
             if not self._tray_notified:
                 self._tray_notified = True
                 self._tray.showMessage(
-                    "Spore 仍在运行", "已收进托盘：双击托盘图标打开，右键退出",
+                    "Spore 仍在运行", "已收进托盘：单击托盘图标打开，右键退出",
                     QSystemTrayIcon.MessageIcon.Information, 3000)
             return
         for h in self._hotkeys:

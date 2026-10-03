@@ -60,7 +60,7 @@ class HelpPane(QWidget):
             lay.addLayout(row)
         lay.addWidget(hint_label(
             "全局热键随程序常驻；关窗只是收进托盘，"
-            "双击托盘图标打开，托盘右键「退出」才真正退出。"))
+            "单击托盘图标打开，托盘右键「退出」才真正退出。"))
         stack.addWidget(card)
 
         # ================= 卡三：页面速览 =================
