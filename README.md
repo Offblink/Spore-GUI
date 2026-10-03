@@ -12,21 +12,24 @@
 ## 下载
 
 到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化，推荐）**：
-内含客户端 `Spore.exe`、后端 jar、`启动 Spore.bat`、`schema.sql`（建库脚本）与数据库口令模板。
+内含客户端 `Spore.exe`、后端 jar、`schema.sql`（建库脚本）与数据库口令模板。
 首次准备（只做一次）：
 
 1. 安装 **JDK 8** 与 **MySQL**，导入表结构：`mysql -u root -p < schema.sql`
 2. 复制 `application-local.yml.example` 为 `application-local.yml`，填入你的 MySQL 账号口令
-3. 双击 `启动 Spore.bat`（先起后端、再开客户端；后端已在跑则跳过）
+3. 双击 `Spore.exe` —— 后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端
 
+> `Spore.exe` 必须与 `spore-backend-*.jar` 同目录：客户端按 exe 所在目录找后端。
 > 单个 `Spore-<版本>-win64.exe` 也挂在 Releases 上，但它**只是客户端**，需要你自备后端。
 > 用源码跑整套（含后端开发）见下方「快速开始」。
 
 ## 快速开始
 
 1. 准备环境：JDK 8、Maven、Python 3.13（本机已装好即可）。
-2. 双击仓库根目录的 `start-spore.bat`：自动拉起后端（已在跑则跳过）与客户端。
-3. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
+2. 构建后端 jar：`mvn clean package -DskipTests`（客户端要从 `target/` 拿 jar 起后端）。
+3. 双击仓库根目录的 `start-spore.bat` 拉起客户端——**后端由客户端自己起，不弹命令行窗口**，
+   退出客户端即停后端；你先自己跑了 `mvn spring-boot:run` 的话，它检测到 8080 在监听就直接复用。
+4. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
 
 ### 从源码构建客户端 exe
 
@@ -73,7 +76,7 @@ spore-gui/
 ├─ src/main/java/…       后端（REST / 存储 / 同步 / 账号）
 ├─ client/spore_client/  客户端（answer 引擎、records 记录页、settings 设置、help_page 帮助）
 ├─ client/tests/         客户端测试
-├─ start-spore.bat       一键启动（后端 + 客户端）
+├─ start-spore.bat       一键启动客户端（后端随客户端自动起停）
 └─ pom.xml
 ```
 

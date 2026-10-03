@@ -1,7 +1,10 @@
-"""组装 Windows 一体化发行包（客户端 exe + 后端 jar + 启动器 + 建库脚本）。
+"""组装 Windows 一体化发行包（客户端 exe + 后端 jar + 建库脚本 + 口令模板）。
 
 用法：python tools/make_release_bundle.py     （在 client/ 下，或任意处跑）
 产物：client/dist/Spore-<版本>-win64.zip
+
+没有启动脚本：后端由客户端自己拉起（见 spore_client/backend.py，无命令行窗口、
+随客户端退出而停），所以包里只有 exe + jar + 建库/配置说明。
 
 前置：先跑过 tools/build_exe.py（要 dist/Spore-<ver>-win64.exe），
 且在仓库根跑过 `mvn -DskipTests package`（要 target/spore-gui-*.jar）。
@@ -56,8 +59,7 @@ def main() -> int:
     shutil.copy2(exe, staging / "Spore.exe")
     shutil.copy2(jar, staging / jar.name)
     shutil.copy2(schema, staging / "schema.sql")
-    for name in ("启动 Spore.bat", "README.txt",
-                 "application-local.yml.example"):
+    for name in ("README.txt", "application-local.yml.example"):
         shutil.copy2(RELEASE_FILES / name, staging / name)
 
     zip_path = DIST / f"Spore-{ver}-win64.zip"

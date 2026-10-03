@@ -77,7 +77,10 @@ def main() -> int:
     time.sleep(15)
     alive = proc.poll() is None
     if alive:
-        proc.terminate()
+        # onefile = 父 bootloader + 子进程两枚：只 terminate 父进程会留下
+        # 带窗口/热键的孤儿（2026-10-03 实测：自检完桌面上还挂着一个 Spore 登录窗）
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       capture_output=True)
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:

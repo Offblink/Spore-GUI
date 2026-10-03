@@ -101,7 +101,8 @@ class HelpPane(QWidget):
         card, lay, _ = build_card("常见问题")
         for line in (
             "回答不出来？先到设置页看 API Key 是否「已设置」，再点「测试连接」。",
-            "界面一直空白？确认后端已启动——双击 start-spore.bat 会自动拉起。",
+            "界面一直空白？后端没起来：登录页会写明原因（客户端自己起后端、"
+            "不弹命令行窗口），完整报错在 logs\\backend-console.log。",
             "截图不显示？题库目录被移动过就重新选一次（设置页「切换…」）。",
             "检索没结果？网络受限时在设置页填本机代理，"
             "走 DDG→BING→BRAVE 检索链。",

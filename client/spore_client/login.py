@@ -1,4 +1,4 @@
-"""登录窗口：账号密码 + 🙈/👀 口令可见切换 + 注册首个管理员 + device.token 静默登录。
+"""登录窗口：账号密码 + 🙈/👀 口令可见切换 + 注册（首个注册的用户即管理员）+ device.token 静默登录。
 
 UI 只经 ApiClient 走 REST（handoff §1 铁律不变）。
 """
@@ -59,7 +59,8 @@ class LoginWindow(QWidget):
 
     loginSucceeded = Signal(dict)
 
-    def __init__(self, api: ApiClient, parent=None):
+    def __init__(self, api: ApiClient, parent=None,
+                 startup_note: str | None = None):
         super().__init__(parent)
         self.api = api
         self.revealed = False
@@ -72,7 +73,7 @@ class LoginWindow(QWidget):
         root.setContentsMargins(48, 36, 48, 36)
         root.setSpacing(14)
 
-        title = StrongBodyLabel("Spore 登录")
+        title = StrongBodyLabel("登录")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 22px; font-weight: bold;")
         root.addWidget(title)
@@ -95,10 +96,12 @@ class LoginWindow(QWidget):
         self.status.setTextColor("#d13438", "#d13438")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
+        if startup_note:
+            self.status.setText(startup_note)  # 后端没起来：开门第一句就说清为什么连不上
 
         btn_row = QHBoxLayout()
         self.login_btn = PrimaryPushButton("登录")
-        self.register_btn = PushButton("注册首个管理员")
+        self.register_btn = PushButton("注册")
         btn_row.addStretch(1)
         btn_row.addWidget(self.login_btn)
         btn_row.addWidget(self.register_btn)
