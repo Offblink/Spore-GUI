@@ -1,10 +1,10 @@
-Spore v1.0.0 —— 截图搜题桌面应用（Windows 客户端 + 后端一体包）
+Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一体包）
 ================================================================
 
 【包里有什么】
   Spore.exe                       客户端（截图作答 / 搜题记录 / 设置 / 帮助）
                                   双击它即可：后端随客户端自动启动，不弹命令行窗口
-  spore-backend-1.0.0.jar         后端（Spring Boot，REST + MySQL）——请与 Spore.exe 同目录
+  spore-backend-{VERSION}.jar         后端（Spring Boot，REST + MySQL）——请与 Spore.exe 同目录
   schema.sql                      建库脚本（首次导入用）
   application-local.yml.example   数据库口令模板（复制改名后填写）
   本说明

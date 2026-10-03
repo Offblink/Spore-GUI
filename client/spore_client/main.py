@@ -14,6 +14,7 @@ from . import __version__
 from .api import ApiClient
 from .app_icon import app_icon
 from .backend import BackendError, EmbeddedBackend
+from .instance_lock import acquire_instance_lock
 from .log import get_logger
 from .login import LoginWindow, try_device_login
 from .main_window import MainWindow
@@ -156,13 +157,19 @@ def main() -> int:
     setTheme(Theme.LIGHT)
     _install_excepthooks()
 
-    # ---- 单例：listen 抢到名字 = 首实例；抢不到 = 已有实例，通知它唤醒、本进程退 ----
-    server = QLocalServer()
-    server.newConnection.connect(lambda: _on_wake(server, app))
-    if not server.listen(INSTANCE_NAME):
+    # ---- 单例：内核互斥体才是判据（QLocalServer 同名 listen 本机不冲突，实测双开都「owned」）；
+    #      管子降级成唤醒通道：只有首实例 listen，第二实例连上来发 wake 就退 ----
+    lock = acquire_instance_lock()
+    if lock is None:
         LOG.info("instance started: pipe held by existing instance → wake + exit")
         _wake_existing()
         return 0
+    app._instance_lock = lock  # noqa: SLF001 — 句柄不放，锁就不放（进程退出内核自动释放）
+    server = QLocalServer()
+    server.newConnection.connect(lambda: _on_wake(server, app))
+    if not server.listen(INSTANCE_NAME):
+        # 单例不受影响（锁在手），只是唤醒通道废了：第二实例会退但叫不醒首实例
+        LOG.error("instance pipe listen failed: %s", server.errorString())
     app._instance_server = server  # noqa: SLF001 — 防 GC
     LOG.info("instance started: pipe owned")
 

@@ -60,7 +60,8 @@ def main() -> int:
     shutil.copy2(jar, staging / jar.name)
     shutil.copy2(schema, staging / "schema.sql")
     for name in ("README.txt", "application-local.yml.example"):
-        shutil.copy2(RELEASE_FILES / name, staging / name)
+        text = (RELEASE_FILES / name).read_text(encoding="utf-8")
+        (staging / name).write_text(text.replace("{VERSION}", ver), encoding="utf-8")
 
     zip_path = DIST / f"Spore-{ver}-win64.zip"
     if zip_path.exists():

@@ -123,30 +123,45 @@ _JOB_EXTENDED_LIMIT_INFORMATION = 9   # JobObjectExtendedLimitInformation
 _JOB_EXT_LIMIT_SIZE = 144             # sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
 _LIMIT_FLAGS_OFFSET = 16              # BasicLimitInformation.LimitFlags 的字节偏移
 
+# use_last_error=True：调用后用 ctypes.get_last_error() 拿真 errno（windll 拿不到）
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.CreateJobObjectW.restype = wintypes.HANDLE
+_k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+_k32.SetInformationJobObject.restype = wintypes.BOOL
+_k32.SetInformationJobObject.argtypes = (
+    wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+_k32.AssignProcessToJobObject.restype = wintypes.BOOL
+_k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+_k32.CloseHandle.restype = wintypes.BOOL
+_k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
 
 def kill_on_parent_exit(proc: subprocess.Popen) -> int | None:
     """把子进程挂进 job（KILL_ON_JOB_CLOSE），返回 job 句柄；挂不上返回 None（不致命）。
 
     句柄必须由调用方**一直持有**：客户端进程一没，内核关掉句柄就杀掉 job 里的进程。
+    挂不上必须记 errno —— 否则「崩溃也收尸」这条就只剩一张嘴。
     """
-    k32 = ctypes.windll.kernel32
-    k32.CreateJobObjectW.restype = wintypes.HANDLE
-    k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
-    k32.SetInformationJobObject.argtypes = (
-        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
-    k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-
-    job = k32.CreateJobObjectW(None, None)   # 匿名 job：不命名，跨用户/会话零冲突
+    ctypes.set_last_error(0)
+    job = _k32.CreateJobObjectW(None, None)   # 匿名 job：不命名，跨用户/会话零冲突
     if not job:
+        LOG.warning("CreateJobObjectW failed errno=%s → 崩溃时后端可能残留",
+                    ctypes.get_last_error())
         return None
     info = bytearray(_JOB_EXT_LIMIT_SIZE)
     struct.pack_into("I", info, _LIMIT_FLAGS_OFFSET, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
-    ok = k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT_INFORMATION,
-                                     bytes(info), _JOB_EXT_LIMIT_SIZE)
+    if not _k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMIT_INFORMATION,
+                                        bytes(info), _JOB_EXT_LIMIT_SIZE):
+        LOG.warning("SetInformationJobObject failed errno=%s → 崩溃时后端可能残留",
+                    ctypes.get_last_error())
+        _k32.CloseHandle(job)
+        return None
+    ctypes.set_last_error(0)
     # proc._handle 是 CPython Windows 专有的进程句柄（唯一的免开句柄来源）
-    if not ok or not k32.AssignProcessToJobObject(job, proc._handle):
-        k32.CloseHandle(job)
+    if not _k32.AssignProcessToJobObject(job, proc._handle):
+        LOG.warning("AssignProcessToJobObject(pid=%s) failed errno=%s → 崩溃时后端可能残留",
+                    proc.pid, ctypes.get_last_error())
+        _k32.CloseHandle(job)
         return None
     return int(job)
 
@@ -154,7 +169,7 @@ def kill_on_parent_exit(proc: subprocess.Popen) -> int | None:
 def close_job(job: int | None) -> None:
     """关掉 job 句柄（= 请求内核按 KILL_ON_JOB_CLOSE 收掉里面还活着的进程）。"""
     if job:
-        ctypes.windll.kernel32.CloseHandle(job)
+        _k32.CloseHandle(job)
 
 
 def launch_dir(jar: Path) -> Path:
@@ -259,9 +274,7 @@ class EmbeddedBackend:
         self.console_log = log
         self.proc = spawn_hidden(
             [java, "-jar", jar.absolute(), *config_args(workdir)], workdir, log)
-        self._job = kill_on_parent_exit(self.proc)
-        if self._job is None:
-            LOG.warning("job object attach failed → 崩溃时后端可能残留（优雅退出不受影响）")
+        self._job = kill_on_parent_exit(self.proc)   # 失败原因已在函数里记 errno
         LOG.info("backend spawned: pid=%s job=%s cmd='%s -jar %s' cwd=%s",
                  self.proc.pid, self._job, java, jar.name, workdir)
 
