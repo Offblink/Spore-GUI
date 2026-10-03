@@ -198,6 +198,22 @@ def test_article_shot_falls_back_to_message_image(tmp_path):
     assert article_shot({"attachmentPath": "", "messages": []}, api) == ""
 
 
+# ---------- 协议标记转义（「ok」不许被富文本当标签吃掉） ----------
+
+def test_protocol_markers_survive_rendering():
+    html = _detail_html({"messages": [_answer_msg(
+        verifyPending=True,
+        verifyNote="初答自评「确定」（<<ok>> 守卫），已跳过联网核实。")]})
+    assert "&lt;&lt;ok" in html        # 转义后可视文本仍是 <<ok>>
+    assert "<ok>" not in html          # 旧现场：被当标签吞掉、「ok」二字消失
+
+
+def test_pending_verify_renders_button_anchor():
+    html = _detail_html({"messages": [
+        _answer_msg(verifyPending=True, verifyNote="点按钮开始")]})
+    assert 'href="spore://verify"' in html   # 关自动核实后有地方点核实
+
+
 # ---------- 追问小节标在用户追问气泡上方 ----------
 
 def test_followup_label_above_user_bubble_in_history_html():

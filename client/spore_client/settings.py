@@ -11,7 +11,9 @@ letter-spacing / text-transform / box-shadow：字距用字号+颜色近似，
 字段改动 → 600ms 防抖自动保存（options.js scheduleSave 同款）：写 settings_store
 之余同时改内存里的 llm 对象——主窗与引擎持同一实例，即改即生效，无保存按钮。
 
-红线：api_key 只活在环境变量里，本页只展示「已配置/未配置」，绝不给输入框。
+红线（2026-10-03 拍板改版）：api_key 只依赖 config（LOCALAPPDATA/Spore/
+ui_settings.json），环境变量废除；输入框不回显，只显示「（已设置）」，
+粘贴新值回车即覆盖。
 简报 §1：半圆小角（hideToggle）不移植，快捷键卡只有两个 kbd 徽标。
 """
 
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -119,6 +122,14 @@ def hint_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setWordWrap(True)
     lab.setStyleSheet(HINT_STYLE)
+    return lab
+
+
+def setting_label(text: str) -> QLabel:
+    """开关行左侧标题（2026-10-03 反馈：灰色小字不对，用正常正文字号字色）。"""
+    lab = QLabel(text)
+    lab.setWordWrap(True)
+    lab.setStyleSheet("font-size: 13.5px; color: #2b2f4a; font-weight: 400;")
     return lab
 
 
@@ -238,8 +249,16 @@ class SettingsPane(QWidget):
         lay.addWidget(self.endpoint_edit)
 
         lay.addWidget(field_label("API Key"))
+        # 输入框永不回显旧值：只在敲入期间持有新值，回车即覆盖保存
+        #（2026-10-03 拍板：key 只依赖 config，环境变量废除）
+        self.key_edit = LineEdit()
+        self.key_edit.setObjectName("keyEdit")
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        self.key_edit.setStyleSheet(INPUT_STYLE)
+        self.key_edit.returnPressed.connect(self._save_key)
+        lay.addWidget(self.key_edit)
         self.key_status = QLabel()
-        self.key_status.setObjectName("apiKeyStatus")  # 只是状态行，不是输入框
+        self.key_status.setObjectName("apiKeyStatus")  # 状态行：已设置/未设置
         self.key_status.setWordWrap(True)
         lay.addWidget(self.key_status)
 
@@ -276,7 +295,7 @@ class SettingsPane(QWidget):
         self.auto_switch.checkedChanged.connect(
             lambda on: self._model_changed("auto_verify", on))
         row = QHBoxLayout()
-        row.addWidget(hint_label(
+        row.addWidget(setting_label(
             "自动核实（答完自动联网核实；关掉后回答里出现「核实一下」按钮，点它才核实）"), 1)
         row.addWidget(self.auto_switch)
         lay.addLayout(row)
@@ -286,7 +305,7 @@ class SettingsPane(QWidget):
         self.fast_switch.checkedChanged.connect(
             lambda on: self._model_changed("fast_no_think", on))
         row = QHBoxLayout()
-        row.addWidget(hint_label("初答直接作答、不写推理（更快）"), 1)
+        row.addWidget(setting_label("初答直接作答、不写推理（更快）"), 1)
         row.addWidget(self.fast_switch)
         lay.addLayout(row)
 
@@ -359,12 +378,7 @@ class SettingsPane(QWidget):
         self.history_spin.setValue(int(self.llm.history_limit))
         self.auto_switch.setChecked(bool(self.llm.auto_verify))
         self.fast_switch.setChecked(bool(self.llm.fast_no_think))
-        if self.llm.api_key:
-            self.key_status.setText("API key：已从环境变量读取 ✓（不显示本体）")
-            self.key_status.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
-        else:
-            self.key_status.setText("未配置 ✗")
-            self.key_status.setStyleSheet("color: #d02747; font-size: 12.5px;")
+        self._sync_key_ui()
 
         self._ready = True
         self._sync_probe_btn()
@@ -380,6 +394,28 @@ class SettingsPane(QWidget):
             return
         self._save_timer.start()          # 连续敲键只落最后一次
 
+    def _save_key(self):
+        """粘贴新 key 回车 → 覆盖保存（永不回显；空输入只刷新状态行）。"""
+        val = self.key_edit.text().strip()
+        if val:
+            self.llm.api_key = val        # 即改即生效（主窗/引擎持同一实例）
+            self.key_edit.clear()
+            self._sync_key_ui()
+            self._sync_probe_btn()
+            self._touch()
+        self.status.setText("已自动保存")
+        QTimer.singleShot(2200, self._clear_saved_hint)
+
+    def _sync_key_ui(self):
+        if self.llm.api_key:
+            self.key_status.setText("已设置 ✓（不回显；粘贴新值回车即覆盖）")
+            self.key_status.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
+            self.key_edit.setPlaceholderText("（已设置）")
+        else:
+            self.key_status.setText("未设置 ✗（粘贴后回车保存）")
+            self.key_status.setStyleSheet("color: #d02747; font-size: 12.5px;")
+            self.key_edit.setPlaceholderText("（未设置）")
+
     def _collect(self) -> dict:
         return {
             "endpoint": self.llm.endpoint,
@@ -389,12 +425,13 @@ class SettingsPane(QWidget):
             "proxy": self.llm.proxy,
             "fastNoThink": self.llm.fast_no_think,
             "autoVerify": self.llm.auto_verify,
+            "apiKey": self.llm.api_key,   # 只依赖 config（2026-10-03 拍板）
         }
 
     def _save(self):
         data = settings_store.read()
         data.update(self._collect())
-        settings_store.write(data)        # 白名单落盘，api_key 写不进去
+        settings_store.write(data)        # 白名单落盘（含 apiKey，2026-10-03 拍板）
         self.status.setText("已自动保存")
         QTimer.singleShot(2200, self._clear_saved_hint)
 

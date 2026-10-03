@@ -26,8 +26,8 @@ class _StorageApi:
         return dict(self.returned)
 
 
-def _pane(api) -> SettingsPane:
-    return SettingsPane(api, LlmSettings(api_key="sk-test"))
+def _pane(api, llm: LlmSettings | None = None) -> SettingsPane:
+    return SettingsPane(api, llm or LlmSettings(api_key="sk-test"))
 
 
 def test_storage_refresh_fills_dir_and_stats(qapp):
@@ -67,3 +67,17 @@ def test_plain_spinbox_still_reacts_to_wheel(qapp):
     spin.setValue(5)
     spin.wheelEvent(_wheel_event())
     assert spin.value() != 5
+
+
+# ---------- API key 输入框（2026-10-03 拍板：只依赖 config，不回显） ----------
+
+def test_key_input_saves_without_echoing(qapp):
+    pane = _pane(_StorageApi(), LlmSettings())      # 起点：没设过 key
+    assert pane.key_edit.text() == ""                 # 永不回显旧值
+    assert pane.key_edit.placeholderText() == "（未设置）"
+    pane.key_edit.setText("  sk-new  ")
+    pane._save_key()
+    assert pane.llm.api_key == "sk-new"               # 即改即生效
+    assert pane.key_edit.text() == ""                 # 保存即清空，不回显
+    assert pane.key_edit.placeholderText() == "（已设置）"
+    assert pane._collect()["apiKey"] == "sk-new"      # 进落盘白名单

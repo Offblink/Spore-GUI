@@ -8,7 +8,11 @@ chat-start 的「追问」灰字必须画在用户追问气泡**上方**（用�
 from PySide6.QtWidgets import QLabel
 
 from spore_client.answer.settings import LlmSettings
-from spore_client.answer_window import AnswerWindow, place_near
+from spore_client.answer_window import (
+    AnswerWindow,
+    _md_html,
+    place_near,
+)
 
 PANEL = (460, 560)        # AnswerWindow 默认尺寸
 SCREEN = (1493, 933)      # 本机逻辑分辨率（150% 缩放）
@@ -67,6 +71,32 @@ def test_show_and_hide_fade_settle_at_full_and_hidden(qapp):
     QTest.qWait(400)
     assert not win.isVisible()            # 淡出后才收窗
     assert abs(win.windowOpacity() - 1.0) < 1e-6   # α 复位，下次从 0 淡入
+
+
+# ---------- 圆角描边（2026-10-03 反馈：边框要与背景区分） ----------
+
+def test_panel_stylesheet_has_rounded_visible_border(qapp):
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    sheet = win.styleSheet()
+    assert "border-radius" in sheet
+    assert "border:1.5px solid" in sheet
+
+
+def test_md_html_escapes_protocol_markers():
+    html = _md_html("（<<ok>> 守卫）")
+    assert "&lt;&lt;ok" in html
+    assert "<ok>" not in html
+
+
+def test_history_verify_chip_priority_matches_records(qapp):
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    # 跑完核实却残留 pending 标记（2026-10-03 图1 现场）→ 显示结果，不显示 ⏳
+    win._add_history_msg({"role": "assistant", "kind": "answer", "ans": "A",
+                          "verifyPending": True, "verifyRan": True,
+                          "verifyVerdict": "OK", "verifyNote": "与初答一致"})
+    blk = win._blocks[-1]
+    assert blk["chip"].text() == "✅ 与初答一致"
+    assert blk["verify_btn"].isHidden()          # 结果态不给核实按钮
 
 
 # ---------- 追问小节标位置（2026-10-03 反馈） ----------

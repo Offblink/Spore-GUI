@@ -34,12 +34,13 @@ from contextlib import suppress
 from pathlib import Path
 
 import markdown
-from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QEnterEvent,
     QPainter,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -77,8 +78,10 @@ STATUS_LABEL = {
 
 
 def _md(text: str) -> str:
-    # 不加 math 扩展：markdown≥3.6 已移除，引用即每次渲染必抛
-    return markdown.markdown(str(text or ""),
+    # 不加 math 扩展：markdown≥3.6 已移除，引用即每次渲染必抛。
+    # `<<` 先转义：模型协议标记（<<ok>> 等）会被富文本当标签吃掉，
+    # 「ok」直接消失（2026-10-03 用户截图实锤）
+    return markdown.markdown(str(text or "").replace("<<", "&lt;&lt;"),
                              extensions=["fenced_code", "tables", "nl2br"])
 
 
@@ -137,6 +140,35 @@ class _CatTask(QThread):
             self.ok.emit(_flatten(self.api.category_tree() or []))
         except (ApiError, NetworkError) as e:
             self.failed.emit(str(e))
+
+
+# ---------------------------------------------------------------- 圆形单选
+class _CircleRadio(QRadioButton):
+    """圆形指示器 + 选中打√（2026-10-03 用户截图：QSS 的 checked 态
+    16px+5px 边渲成了圆角方块，且两个行样式不一致——改为自绘）。"""
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        d = 16.0
+        x0 = 1.0
+        box = QRectF(x0, (self.height() - d) / 2, d, d)
+        if self.isChecked():
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#ec4899"))
+            p.drawEllipse(box)
+            p.setPen(QPen(QColor("#ffffff"), 2.0, Qt.SolidLine,
+                          Qt.RoundCap, Qt.RoundJoin))
+            p.drawLine(x0 + 4.4, box.y() + 8.4, x0 + 7.0, box.y() + 11.2)
+            p.drawLine(x0 + 7.0, box.y() + 11.2, x0 + 11.6, box.y() + 5.8)
+        else:
+            p.setPen(QPen(QColor("#c4c9db"), 1.5))
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(box)
+        p.setPen(QColor("#2b2f4a"))
+        p.setFont(self.font())
+        p.drawText(QRectF(24, 0, max(0.0, self.width() - 24), self.height()),
+                   int(Qt.AlignVCenter | Qt.AlignLeft), self.text())
 
 
 # ---------------------------------------------------------------- 输入模态
@@ -208,11 +240,7 @@ class _MoveDialog(QDialog):
         self.setStyleSheet(
             "QDialog{background:#ffffff; border-radius:16px;}"
             "QRadioButton{font-size:14px; color:#2b2f4a; spacing:8px;"
-            " padding:4px 0;}"
-            "QRadioButton::indicator{width:16px; height:16px; border-radius:9px;"
-            " border:1px solid #cfd3e6; background:#fafbfe;}"
-            "QRadioButton::indicator:checked{border:5px solid #ec4899;"
-            " background:#ffffff;}"
+            " padding:4px 0;}"     # 指示器由 _CircleRadio 自绘（圆圈+√）
             "QPushButton{border:none; border-radius:11px; padding:9px 20px;"
             " font-weight:600; font-size:14px;}"
             "QPushButton#cancel{background:#f1f3fb; color:#4a4f6b;}"
@@ -234,7 +262,7 @@ class _MoveDialog(QDialog):
             (str(c["id"]), "　" * int(c.get("depth", 0)) + str(c["name"]))
             for c in cats]
         for cid, label in rows:
-            rb = QRadioButton(label)
+            rb = _CircleRadio(label)
             self._radios.append(rb)
             self._targets.append(cid)
             opts.addWidget(rb)
@@ -571,6 +599,16 @@ def _detail_html(art: dict) -> str:
                     f"{chip}</span></div>"
                     f'<div style="color:#3d4260; font-size:15px;">'
                     f"{_md(note)}</div></div>")
+                if (m.get("verifyPending") and not m.get("verifyRan")
+                        and not m.get("verifySkipped")):
+                    # 「核实一下」按钮（2026-10-03 反馈：关自动核实后没地方
+                    # 点核实）——QTextBrowser 里用锚实现，走 spore:// 协议
+                    blk.append(
+                        '<div style="margin-top:8px;"><a href="spore://verify"'
+                        ' style="background:#ec4899; color:#ffffff;'
+                        ' border-radius:10px; padding:6px 14px;'
+                        ' text-decoration:none; font-weight:600;'
+                        ' font-size:13.5px;">🔍 核实一下</a></div>')
             blk.append("</div>")
             parts.append("".join(blk))
         else:  # chat
@@ -685,6 +723,7 @@ class _ElidedLabel(QLabel):
 class RecordsPane(QWidget):
     followupRequested = Signal(str, str)   # art_id, 追问原文 → 主窗收编+代发
     cancelRequested = Signal()             # 🚫 停止当前回合 → 主窗 engine.cancel
+    verifyRequested = Signal(str)          # 「核实一下」锚点 → 主窗收编+核实
 
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
@@ -820,7 +859,10 @@ class RecordsPane(QWidget):
         dv.addWidget(self.shot_lbl)
 
         self.body = QTextBrowser()
-        self.body.setOpenExternalLinks(True)
+        # 内链 spore:// 自己接（核实按钮锚点），外链走系统浏览器
+        self.body.setOpenLinks(False)
+        self.body.setOpenExternalLinks(False)
+        self.body.anchorClicked.connect(self._on_anchor)
         self.body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
         dv.addWidget(self.body, 1)
 
@@ -865,6 +907,14 @@ class RecordsPane(QWidget):
 
     def _emit_cancel(self):
         self.cancelRequested.emit()
+
+    def _on_anchor(self, url: QUrl):
+        href = url.toString()
+        if href.startswith("spore://"):
+            if href == "spore://verify" and self.current_id:
+                self.verifyRequested.emit(self.current_id)
+            return
+        QDesktopServices.openUrl(url)   # 普通链接照旧外开
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

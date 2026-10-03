@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -75,10 +75,12 @@ class MainWindow(FluentWindow):
         # 用户 2026-10-02：「GUI 应用的长宽都不够」——默认 1280×860，下限 1024×700
         self.resize(1280, 860)
         self.setMinimumSize(1024, 700)
-        # 出生位置贴屏幕左上（2026-10-03 反馈）：窗口调大后默认位置可能出屏，
-        # 每次都要自己拖回来——贴左上保证完全可见（屏小放不下时至少左上在屏内）
+        # 出生位置（2026-10-03 二改：不必紧贴左上，往右下一点，但必须完整在屏内）
         avail = QApplication.primaryScreen().availableGeometry()
-        self.move(avail.left(), avail.top())
+        w, h = self.width(), self.height()
+        x = max(avail.left(), min(avail.left() + 40, avail.right() - w + 1))
+        y = max(avail.top(), min(avail.top() + 24, avail.bottom() - h + 1))
+        self.move(x, y)
 
         # LLM 配置先行：环境变量为底，UI 设置文件补缺（env 显式设置者优先）
         self.llm_settings = apply_to_llm(load_from_env())
@@ -108,6 +110,7 @@ class MainWindow(FluentWindow):
         self.answer_window.followupRequested.connect(self._followup)
         self.records.followupRequested.connect(self._records_followup)
         self.records.cancelRequested.connect(self.engine.cancel)
+        self.records.verifyRequested.connect(self._records_verify)
 
         # 截屏完成 → 喂给作答浮窗（P3 只落盘的那一步现在接上了）
         self._capture = CaptureController(self._on_captured)
@@ -144,7 +147,8 @@ class MainWindow(FluentWindow):
             " border-radius:20px; font-size:16px; font-weight:650;}"
             "QPushButton:hover{background:#db2777;}")
         self.avatar_btn.clicked.connect(self._toggle_qr_popup)
-        self._qr_pop: QFrame | None = None   # 点开才建（Qt.Popup 点外部自关）
+        self._qr_pop: QFrame | None = None   # 点开才建（点击外部自关）
+        self._qr_hide_ts = 0.0               # 外部点击刚关过 → 别秒重开
         self._me_task = _MeTask(self.api, self)
         self._me_task.ok.connect(self._on_me)
         self._me_task.start()
@@ -188,22 +192,33 @@ class MainWindow(FluentWindow):
         if nick:
             self.avatar_btn.setToolTip(f"{nick} · 手机扫码配对")
 
+    def eventFilter(self, obj, ev):
+        if obj is self._qr_pop and ev.type() == QEvent.Hide:
+            self._qr_hide_ts = time.monotonic()   # 外部点击把它收掉了
+        return super().eventFilter(obj, ev)
+
     def _toggle_qr_popup(self):
         if self._qr_pop is not None and self._qr_pop.isVisible():
             self._qr_pop.hide()
+            return
+        if time.monotonic() - self._qr_hide_ts < 0.4:
+            # 刚被「点外部」收掉：同一轮点击的后半程落在头像上，
+            # 这里再开会变成永远关不上（2026-10-03 反馈：要点击显示再点击关闭）
             return
         self._show_qr_popup()
 
     def _show_qr_popup(self):
         pop = self._qr_pop
         if pop is None:
-            # Qt.Popup：非模态、点外部自动收（用户点名不要模态框）
+            # 非模态、点外部自关；半透明底 + QSS 圆角 = 外层也圆（2026-10-03）
             pop = QFrame(self, Qt.Popup | Qt.FramelessWindowHint
                          | Qt.WindowStaysOnTopHint)
+            pop.setAttribute(Qt.WA_TranslucentBackground, True)
             pop.setObjectName("qrPop")
             pop.setStyleSheet(
                 "#qrPop{background:#ffffff; border:1px solid #e6e8f2;"
                 " border-radius:14px;}")
+            pop.installEventFilter(self)
             box = QVBoxLayout(pop)
             box.setContentsMargins(14, 12, 14, 12)
             box.setSpacing(8)
@@ -297,6 +312,26 @@ class MainWindow(FluentWindow):
             return
         self.records.follow_turn(sess)
         self.records.followup_input.clear()
+
+    def _records_verify(self, art_id: str):
+        """记录页「核实一下」锚点：收编该会话 → 手动跑阶段B，结果直播右栏。"""
+        if self.engine.is_busy():
+            self._notify("warning", "稍等", "当前回合还没结束", 2500)
+            return
+        row = next((r for r in self.records.rows
+                    if str(r.get("id")) == art_id), None)
+        if row is None:
+            return
+        if str(self.engine.session.backend_id) != art_id:
+            sess = session_from_article(row, msgs_of(row))
+            if not self.engine.load_session(sess):
+                self._notify("warning", "稍等", "当前回合还没结束", 2500)
+                return
+        if not self.engine.verify_only():
+            self._notify("warning", "没法核实",
+                         "这条会话没有可核实的回答", 2500)
+            return
+        self.records.follow_turn(self.engine.session)  # 核实流直播进右栏
 
     # ---------- 引擎事件（worker 线程 emit → engineEvent 队列回主线程） ----------
     _DELTA_TYPES = {"answer-delta", "chat-delta", "think-delta", "verify-delta"}

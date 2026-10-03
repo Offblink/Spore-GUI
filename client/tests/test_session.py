@@ -83,23 +83,21 @@ def test_session_from_article_carries_backend_id_and_msgs():
     assert sess.messages[1].tools == ["检索 SQA 定义"]
 
 
-# ---------- LLM 配置：key 只走环境变量（评分红线：源码零硬编码） ----------
+# ---------- LLM 配置：key 只依赖 config（2026-10-03 拍板，源码零硬编码） ----------
 
-def test_env_key_missing_reported_not_raised(monkeypatch):
-    monkeypatch.delenv("SPORE_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+def test_api_key_not_read_from_env_anymore(monkeypatch):
+    # key 的环境变量通道已废除——只认 settings_store 的 apiKey
+    monkeypatch.setenv("SPORE_API_KEY", "sk-env")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env2")
     s = load_from_env()
-    assert not s.ready
-    assert s.errors and "环境变量" in s.errors[0]   # 记错不抛，UI 提示
+    assert s.api_key == ""
+    assert not s.ready                        # 无 key 不就绪（key 由 config 另行读入）
 
 
-def test_env_key_pickup_and_defaults(monkeypatch):
-    monkeypatch.setenv("SPORE_API_KEY", "sk-test")
+def test_env_model_and_rounds_defaults(monkeypatch):
     monkeypatch.delenv("SPORE_ENDPOINT", raising=False)
     monkeypatch.delenv("SPORE_MODEL", raising=False)
     s = load_from_env()
-    assert s.ready
-    assert s.api_key == "sk-test"
     assert s.model == DEFAULT_MODEL          # 与 MV3/手机端同默认
     assert s.max_tool_rounds == 5            # MV3 maxToolRounds 默认
 

@@ -101,9 +101,11 @@ def _star_style(fav: bool, size: int = 14) -> str:
 
 def _md_html(text: str) -> str:
     # math 扩展在 markdown≥3.6 已移除（装的是3.9，引用即每次渲染必抛）；
-    # MV3 md.js 同样不渲染 LaTeX → 去掉保持两端语义一致
+    # MV3 md.js 同样不渲染 LaTeX → 去掉保持两端语义一致。
+    # `<<` 先转义：协议标记（<<ok>>）会被富文本当标签吃掉，「ok」消失（2026-10-03）
     return markdown.markdown(
-        text, extensions=["fenced_code", "tables", "nl2br"])
+        str(text or "").replace("<<", "&lt;&lt;"),
+        extensions=["fenced_code", "tables", "nl2br"])
 
 
 def _md_div(text: str, color: str, size: int) -> str:
@@ -134,6 +136,19 @@ def _no_head(no: object) -> str:
     """`第N题 ` 前缀（MV3 drawer.js:982-985：no 去掉非字母数字）。"""
     digits = re.sub(r"\D", "", str(no or ""))
     return f"第{digits}题 " if digits else ""
+
+
+def _round_window_corners(w) -> None:
+    """Win11 DWM 圆角——frameless 窗自己裁不了角，交给系统合成器
+    （DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2）。失败静默。"""
+    try:
+        import ctypes
+        hwnd = ctypes.c_void_p(int(w.winId()))
+        pref = ctypes.c_int(2)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def _mini_btn(text: str, tip: str, accent: bool = True) -> QPushButton:
@@ -288,6 +303,11 @@ class AnswerWindow(QWidget):
         root.setSpacing(0)
 
         # ---- 标题条（可拖拽；无 pin —— MV3 抽屉无置顶控件） ----
+        # 圆角 + 描边（2026-10-03 反馈：与背景要能区分）——QSS 画边，
+        # 真圆角靠 Win11 DWM（showEvent 里打 DWMWA_WINDOW_CORNER_PREFERENCE）
+        self.setStyleSheet(
+            "AnswerWindow{background:#ffffff; border:1.5px solid #b0b5cb;"
+            " border-radius:8px;}")
         bar = QHBoxLayout()
         bar.setContentsMargins(16, 10, 8, 8)
         bar.setSpacing(8)
@@ -362,6 +382,10 @@ class AnswerWindow(QWidget):
         self._build_sessions_popup()
 
     # ---------- 渐显/渐隐（整窗 α，2026-10-03 反馈） ----------
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        _round_window_corners(self)
+
     def show_fade(self):
         """显示并淡入；已在显示中则只补足 α，不重播整段动画。"""
         self.raise_()
@@ -1055,17 +1079,20 @@ class AnswerWindow(QWidget):
             self._add_tool(blk, str(t))
         if (m.get("verifyPending") or m.get("verifyRan")
                 or m.get("verifySkipped")):
-            if m.get("verifyPending"):
-                vk = "pending"
-            elif m.get("verifySkipped"):
+            # 优先级与记录页一致：已跳过 > 已跑结果 > 待核实——
+            # 旧顺序 pending 最先，跑完核实的历史也显示 ⏳（2026-10-03 图1）
+            if m.get("verifySkipped"):
                 vk = "skipped"
-            elif str(m.get("verifyVerdict") or "") == "FIX":
-                vk = "fix"
+            elif m.get("verifyRan"):
+                vk = "fix" if str(m.get("verifyVerdict") or "") == "FIX" else "ok"
             else:
-                vk = "ok"
+                vk = "pending"
             blk["verify"] = {"kind": vk, "note": m.get("verifyNote") or "",
                              "done": True}
             self._paint_verify(blk)
+            if vk == "pending":
+                # 历史视图也要能点核实（2026-10-03 反馈：关自动核实后没按钮）
+                blk["verify_btn"].setVisible(True)
         self._paint(blk)
 
     def keyPressEvent(self, ev):

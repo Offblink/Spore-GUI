@@ -268,6 +268,7 @@ class AgentEngine:
             answer.ans = fixed
             self._emit({"type": "answer-delta", "idx": idx, **_ans_dict(answer)})
         answer.verifyRan = True
+        answer.verifyPending = False   # 已跑完：不再是「待核实」（图1 类脏状态）
         answer.verifyVerdict = verify.get("verdict", "")
         answer.verifyNote = verify.get("note", "")
         self._emit({"type": "verify-delta", "idx": idx, "ran": True,

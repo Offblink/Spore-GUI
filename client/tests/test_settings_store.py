@@ -1,4 +1,5 @@
-"""settings_store 契约：文件值生效 / 环境变量赢 / MV3 钳制 / api_key 永不落盘。
+"""settings_store 契约：文件值生效 / 环境变量赢（endpoint 等四项）/
+MV3 钳制 / apiKey 落盘且 key 只认 config（2026-10-03 拍板改版）。
 
 PATH 是模块级常量（主线也可能读），测试里 monkeypatch 到 tmp 隔离真实
 %LOCALAPPDATA%\\Spore\\ui_settings.json。
@@ -44,14 +45,15 @@ def test_write_read_roundtrip(store):
     }
 
 
-def test_api_key_never_persisted(store):
-    # 红线：key 只在环境变量 —— 就算调用方误塞进来，白名单也不许它落盘
-    store.write({"endpoint": "https://x/e", "api_key": "sk-secret",
-                 "apiKey": "sk-2", "proxy": "1.2.3.4:5"})
+def test_api_key_persisted_under_camel_case_only(store):
+    # 2026-10-03 拍板：key 只依赖 config → apiKey 白名单落盘；
+    # 拼错的键名 api_key 仍被丢弃（防调用方写错键名静默丢 key）
+    store.write({"endpoint": "https://x/e", "api_key": "sk-wrong-key",
+                 "apiKey": "sk-cfg", "proxy": "1.2.3.4:5"})
     raw = store.PATH.read_text(encoding="utf-8")
-    assert "api_key" not in raw and "apiKey" not in raw
-    assert "sk-secret" not in raw
-    assert store.read() == {"endpoint": "https://x/e", "proxy": "1.2.3.4:5"}
+    assert "sk-cfg" in raw and "sk-wrong-key" not in raw
+    assert store.read() == {"endpoint": "https://x/e", "proxy": "1.2.3.4:5",
+                            "apiKey": "sk-cfg"}
 
 
 # ---------- apply_to_llm ----------
@@ -69,7 +71,22 @@ def test_file_values_apply_to_llm(store):
     assert llm.proxy == "127.0.0.1:7897"
     assert llm.fast_no_think is False
     assert llm.auto_verify is False
-    assert llm.api_key == ""               # 绝不碰 key
+    assert llm.api_key == ""               # 文件没给 key → 空（config-only）
+
+
+def test_api_key_from_config_beats_env(store, monkeypatch):
+    store.write({"apiKey": "sk-cfg"})
+    monkeypatch.setenv("SPORE_API_KEY", "sk-env")
+    llm = store.apply_to_llm(load_from_env())
+    assert llm.api_key == "sk-cfg"         # 只依赖 config，环境变量不参与
+    assert not llm.errors                  # 有 key 不报错
+
+
+def test_missing_api_key_recorded_as_error(store):
+    store.write({"endpoint": "https://x/e"})
+    llm = store.apply_to_llm(LlmSettings())
+    assert llm.api_key == ""
+    assert any("API key" in e for e in llm.errors)   # UI 提示，不抛
 
 
 def test_env_wins_over_file(store, monkeypatch):

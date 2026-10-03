@@ -84,6 +84,7 @@ def test_two_phase_turn_completes_with_fix(monkeypatch):
     assert ans.ans == "B（错）"          # FIX 覆盖答案行
     assert ans.verifyRan is True
     assert ans.verifyVerdict == "FIX"
+    assert ans.verifyPending is False    # 跑完即清「待核实」（2026-10-03 图1）
     # 阶段B 带了工具定义（联网核实的入场券）
     assert fake.calls[1].get("tools")
 

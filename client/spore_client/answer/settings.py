@@ -1,4 +1,5 @@
-"""LLM 接入配置——key 只从环境变量读，源码零硬编码（评分红线）。"""
+"""LLM 接入配置——key 只从 config（settings_store）读，源码零硬编码；
+环境变量只覆盖 endpoint/model/轮数/代理（key 的环境变量通道 2026-10-03 废除）。"""
 
 from __future__ import annotations
 
@@ -30,15 +31,11 @@ class LlmSettings:
 
 
 def load_from_env() -> LlmSettings:
-    """环境变量优先级：SPORE_* 覆盖通用名。key 缺失记进 errors（UI 提示，不抛）。"""
+    """环境变量只管 endpoint/model/轮数/代理：SPORE_* 覆盖通用名。
+    key 不在这条链上——apply_to_llm() 从 config 读（缺失记 errors，不抛）。"""
     s = LlmSettings()
     s.endpoint = os.environ.get("SPORE_ENDPOINT") or DEFAULT_ENDPOINT
     s.model = os.environ.get("SPORE_MODEL") or DEFAULT_MODEL
-    s.api_key = (os.environ.get("SPORE_API_KEY")
-                 or os.environ.get("DEEPSEEK_API_KEY")
-                 or "")
-    if not s.api_key:
-        s.errors.append("未设置 SPORE_API_KEY / DEEPSEEK_API_KEY 环境变量，无法作答")
     try:
         rounds = int(os.environ.get("SPORE_MAX_TOOL_ROUNDS", ""))
         s.max_tool_rounds = max(0, min(10, rounds))

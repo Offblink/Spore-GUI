@@ -1,12 +1,13 @@
 """非敏感 UI 设置持久化：%LOCALAPPDATA%\\Spore\\ui_settings.json。
 
-对齐 MV3 options.js 的 FIELDS/CHECKS（去掉 apiKey；磁盘镜像是浏览器 storage
-专属件，桌面端不做，见 2026-10-02 用户拍板）：
+对齐 MV3 options.js 的 FIELDS/CHECKS（磁盘镜像是浏览器 storage 专属件，
+桌面端不做，见 2026-10-02 用户拍板）：
 endpoint / model / maxToolRounds / historyLimit / proxy / fastNoThink /
-autoVerify。
+autoVerify / **apiKey**。
 
-红线：api_key 只活在环境变量里——write() 按白名单落盘，key 永远进不了文件；
-apply_to_llm() 里环境变量显式设置过的字段必须赢过文件值。
+api_key（2026-10-03 用户拍板改版）：**只依赖 config**——key 随白名单落进本
+本地文件（不进 git/日志/文档），环境变量通道废除；apply_to_llm() 负责读回并
+在缺失时记 errors（UI 提示）。
 """
 
 from __future__ import annotations
@@ -23,11 +24,10 @@ LOG = get_logger()
 # 与 log.py 同根：%LOCALAPPDATA%\Spore\ui_settings.json（SPORE_HOME 可整体重定向）
 PATH: Path = LOG_DIR.parent / "ui_settings.json"
 
-# 落盘白名单（= MV3 FIELDS/CHECKS 去掉 apiKey）。不在表内的键一律丢弃，
-# 因此即使调用方误把 api_key 塞进来也写不进文件（红线由结构保证）。
+# 落盘白名单（= MV3 FIELDS/CHECKS + apiKey）。不在表内的键一律丢弃。
 _FIELDS = (
     "endpoint", "model", "maxToolRounds", "historyLimit", "proxy",
-    "fastNoThink", "autoVerify",
+    "fastNoThink", "autoVerify", "apiKey",
 )
 
 
@@ -61,11 +61,16 @@ def _int(v) -> int | None:
 
 
 def apply_to_llm(llm: LlmSettings) -> LlmSettings:
-    """把文件里的值填进 llm；环境变量显式设置过的字段必须赢。
+    """把文件里的值填进 llm；环境变量对 endpoint/model/轮数/代理仍可覆盖。
 
-    只动 LlmSettings 的字段，绝不碰 api_key/errors。
+    api_key **只依赖 config**（2026-10-03 拍板：环境变量废除）——文件缺失即
+    空 key 并记 errors（UI 提示，不抛）。
     """
     d = read()
+    llm.api_key = str(d.get("apiKey") or "")
+    if not llm.api_key:
+        llm.errors.append(
+            "API key 未设置——到设置页粘贴后回车保存即生效")
     if not d:
         return llm
     env = os.environ

@@ -1,6 +1,7 @@
 package com.offblink.spore.entity;
 
 import com.baomidou.mybatisplus.annotation.FieldFill;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -20,7 +21,12 @@ public class Article {
     /** 外键→user */
     private Long userId;
 
-    /** 外键→category；NULL=未分组 */
+    /**
+     * 外键→category；NULL=未分组。
+     * updateStrategy=ALWAYS：updateById 默认跳过 null 字段，「移出科目」
+     * （set null）会被静默吞掉——2026-10-03 用户「移动到未分组自动失败」根因。
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String categoryId;
 
     /** 标题 */
