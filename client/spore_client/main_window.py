@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from qfluentwidgets import FluentIcon, FluentWindow, InfoBar, InfoBarPosition
 
 from .answer.engine import AgentEngine
+from .answer.session import msgs_of, session_from_article
 from .answer.settings import load_from_env
 from .answer_window import AnswerWindow
 from .api import ApiClient
@@ -38,10 +39,14 @@ class MainWindow(FluentWindow):
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
         self.api = api
-        self.setWindowTitle("Spore 搜题内容管理系统")
+        self.setWindowTitle("Spore")
         # 用户 2026-10-02：「GUI 应用的长宽都不够」——默认 1280×860，下限 1024×700
         self.resize(1280, 860)
         self.setMinimumSize(1024, 700)
+        # 出生位置贴屏幕左上（2026-10-03 反馈）：窗口调大后默认位置可能出屏，
+        # 每次都要自己拖回来——贴左上保证完全可见（屏小放不下时至少左上在屏内）
+        avail = QApplication.primaryScreen().availableGeometry()
+        self.move(avail.left(), avail.top())
 
         # LLM 配置先行：环境变量为底，UI 设置文件补缺（env 显式设置者优先）
         self.llm_settings = apply_to_llm(load_from_env())
@@ -101,16 +106,19 @@ class MainWindow(FluentWindow):
                 parent=self, duration=8000, position=InfoBarPosition.TOP)
 
     # ---------- 页签懒加载 ----------
-    def _on_tab_changed(self, idx: int):
+    def _on_tab_changed(self, idx):
         widget = self.stackedWidget.widget(idx)
+        if widget is self.records:
+            # 记录页每次切入都拉一次（内部有在途防抖）——2026-10-03 反馈
+            # 「有时点进去狂点刷新都不显示」，不再只在首次进入加载
+            self.records.load_categories()
+            self.records.reload()
+            return
         key = getattr(widget, "objectName", lambda: "")() or str(id(widget))
         if key in self._booted:
             return
         self._booted.add(key)
-        if widget is self.records:
-            self.records.load_categories()
-            self.records.reload()
-        elif widget is self.log_page:
+        if widget is self.log_page:
             self.log_page.refresh()
         elif widget is self.settings:
             self.settings.refresh()
@@ -158,11 +166,9 @@ class MainWindow(FluentWindow):
             self._notify("warning", "稍等", "当前回合还没结束", 2500)
 
     def _records_followup(self, art_id: str, text: str):
-        """记录页「接着问」：收编该会话给引擎 → 作答浮窗继续回答。
-
-        落库走 PUT 更新原会话（engine.session.backend_id，§8-2 同链）；
-        引擎正忙时拒发且**不清输入框**，文字留住等下一次。
-        """
+        """记录页「接着问」：收编该会话给引擎，回答直播在记录页右栏——不开浮窗
+        （2026-10-03 用户点名）。落库走 PUT 更新原会话（backend_id，§8-2 同链）；
+        引擎正忙时拒发且**不清输入框**，文字留住等下一次。"""
         if self.engine.is_busy():
             self._notify("warning", "稍等", "当前回合还没结束", 2500)
             return
@@ -170,9 +176,13 @@ class MainWindow(FluentWindow):
                     if str(r.get("id")) == art_id), None)
         if row is None:
             return
-        self.answer_window.load_history(row)   # 渲染历史 + load_session 收编
-        if self.answer_window.send_text(text):
-            self.records.followup_input.clear()
+        sess = session_from_article(row, msgs_of(row))
+        if not (self.engine.load_session(sess)
+                and self.engine.send_followup(text)):
+            self._notify("warning", "稍等", "当前回合还没结束", 2500)
+            return
+        self.records.follow_turn(sess)
+        self.records.followup_input.clear()
 
     # ---------- 引擎事件（worker 线程 emit → engineEvent 队列回主线程） ----------
     _DELTA_TYPES = {"answer-delta", "chat-delta", "think-delta", "verify-delta"}
@@ -189,6 +199,7 @@ class MainWindow(FluentWindow):
                      or "")
             LOG.info("engine event %s %s", t, extra)
         self.answer_window.on_event(ev)
+        self.records.on_engine_event(self.engine.session, ev)  # 记录页直播（§ 反馈）
         if t == "turn-end":
             LOG.info("turn-end in %.1fs deltas=%s",
                      time.monotonic() - self._t_turn, self._delta_counts)

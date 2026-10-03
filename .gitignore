@@ -13,3 +13,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+
+# 题库目录（题图运行时数据，设置页可切换到仓库根下任意目录）
+herstory/

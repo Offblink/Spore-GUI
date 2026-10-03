@@ -4,7 +4,12 @@ Msg.to_dict 的输出直接进 POST /articles 的 messages[]，后端 Msg.java �
 字段名/取舍错了就是静默丢数据（落库成功但内容缺块），这里钉死。
 """
 
-from spore_client.answer.session import Msg, Session
+from spore_client.answer.session import (
+    Msg,
+    Session,
+    msgs_of,
+    session_from_article,
+)
 from spore_client.answer.settings import DEFAULT_MODEL, load_from_env
 
 # ---------- Msg → 后端 Msg.java 字段契约 ----------
@@ -58,6 +63,24 @@ def test_session_id_unique_and_status_lifecycle():
     a.touch()
     assert a.updated >= a.created
     assert a.title == "新会话"   # 占位语义与两端一致（design/03 §1）
+
+
+# ---------- ArticleVO → 可接续 Session（§8-2；2026-10-03 自 answer_window 迁入） ----------
+
+def test_session_from_article_carries_backend_id_and_msgs():
+    art = {"id": "20261002-abc", "title": "SQA 范围", "fav": 1,
+           "status": "done",
+           "messages": [{"role": "user", "kind": "chat", "text": "在吗",
+                         "ts": 5},
+                        {"role": "assistant", "kind": "answer", "ans": "A（对）",
+                         "tools": ["检索 SQA 定义"]},
+                        "畸形行"]}
+    sess = session_from_article(art, msgs_of(art))
+    assert sess.backend_id == "20261002-abc"   # turn-end 据此走 PUT 而非 POST
+    assert sess.title == "SQA 范围" and sess.fav is True
+    assert [m.role for m in sess.messages] == ["user", "assistant"]
+    assert sess.messages[0].ts == 5            # ts 是排序依据，别丢
+    assert sess.messages[1].tools == ["检索 SQA 定义"]
 
 
 # ---------- LLM 配置：key 只走环境变量（评分红线：源码零硬编码） ----------

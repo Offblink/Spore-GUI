@@ -21,9 +21,7 @@ Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；新截屏
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 
 import markdown
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -48,11 +46,11 @@ from qfluentwidgets import (
 )
 
 from .answer.engine import AgentEngine
-from .answer.session import Msg, Session
+from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .log import get_logger
-from .records import _InputDialog
+from .records import _InputDialog, article_shot
 
 LOG = get_logger()
 
@@ -92,50 +90,6 @@ def _star_style(fav: bool, size: int = 14) -> str:
     return (f"QPushButton{{background:transparent; border:none; color:{base};"
             f" font-size:{size}px; border-radius:6px;}}"
             "QPushButton:hover{background:#ffeef7; color:#db2777;}")
-
-
-def _msgs_of(article: dict) -> list:
-    """ArticleVO.messages（后端 toVo 顶层直带）；兼容详情 content.messages/JSON 串。"""
-    msgs = article.get("messages")
-    if isinstance(msgs, list):
-        return msgs
-    content = article.get("content")
-    if isinstance(content, dict):
-        msgs = content.get("messages")
-        return msgs if isinstance(msgs, list) else []
-    if isinstance(content, str):
-        try:
-            data = json.loads(content)
-        except (ValueError, TypeError):
-            return []
-        msgs = data.get("messages") if isinstance(data, dict) else None
-        return msgs if isinstance(msgs, list) else []
-    return []
-
-
-_MSG_FIELDS = ("role", "kind", "text", "no", "title", "ans", "why",
-               "verifyVerdict", "verifyNote", "hasImage", "imagePath",
-               "verifyRan", "verifySkipped", "verifyPending", "tools", "ts")
-
-
-def _session_from_article(article: dict, msgs: list) -> Session:
-    """ArticleVO → 可接续的 Session：backend_id 带上，turn-end 落库走 PUT（§8-2）。
-
-    只搬 Msg.to_dict 会落库的字段（think 不渲染也不进上下文，不搬）；
-    缺键走 Msg 默认值，缺 role 的畸形行直接跳过。
-    """
-    sess = Session(
-        title=str(article.get("title") or "新会话"),
-        backend_id=str(article.get("id") or ""),
-        fav=bool(article.get("fav")),
-        status=str(article.get("status") or ""),
-    )
-    for m in msgs:
-        if not isinstance(m, dict) or "role" not in m:
-            continue
-        kw = {k: m[k] for k in _MSG_FIELDS if k in m and m[k] not in (None, "")}
-        sess.messages.append(Msg(**kw))
-    return sess
 
 
 def _md_html(text: str) -> str:
@@ -461,7 +415,9 @@ class AnswerWindow(QWidget):
         elif t == "chat-start":
             text = str(ev.get("text") or "")
             if text:
-                # 用户自己发的那条：先画气泡，再画助理回复（MV3 顺序）
+                # 追问小节标在用户气泡**上方**（2026-10-03 反馈：旧顺序是
+                # 先检索小票才见「追问」）；然后才是用户气泡与助理回复
+                self._append_section("追问")
                 self._append_user(text)
             self._cur = self._append_block("chat")
             self._cur["text"] = ""
@@ -576,11 +532,11 @@ class AnswerWindow(QWidget):
             b["verify_frame"], b["chip"], b["note"] = self._make_verify()
             b["verify_frame"].setVisible(False)
             lay.addWidget(b["verify_frame"])
-        elif kind == "chat":  # MV3 drawer.js:1012-1018 tools 排在正文之前
+        elif kind == "chat":  # MV3 drawer.js:1012-1018 tools 排在正文之前；
+            # 「追问」小节标在用户气泡上方（chat-start/历史路径加），这里不重复
             b["tools_box"] = QVBoxLayout()
             b["tools_box"].setSpacing(4)
             lay.addLayout(b["tools_box"])
-            lay.addWidget(_sec_label("追问"))
             b["text_lbl"] = self._md_label()
             lay.addWidget(b["text_lbl"])
         else:  # user 气泡：MV3 div.utext —— 纯文本，不走 markdown
@@ -783,14 +739,6 @@ class AnswerWindow(QWidget):
         self.input.clear()
         self.followupRequested.emit(text)
 
-    def send_text(self, text: str) -> bool:
-        """外部代输入的追问（记录页接续入口）：走与输入框同一条发送链。"""
-        text = (text or "").strip()
-        if not text:
-            return False
-        self.followupRequested.emit(text)
-        return True
-
     def _cancel(self):
         if self._engine is not None:
             self._engine.cancel()
@@ -859,6 +807,11 @@ class AnswerWindow(QWidget):
         blk["text"] = str(text)
         self._paint(blk)
         return blk
+
+    def _append_section(self, text: str):
+        """灰色小节标（同 _sec_label），插在 stretch 前——追问气泡的上方锚点。"""
+        self._blocks_box.insertWidget(self._blocks_box.count() - 1,
+                                      _sec_label(text))
 
     # ---- 💬 会话列表浮层（MV3 drawer #listpop：点外/Esc/再点 💬 关闭） ----
     def _build_sessions_popup(self):
@@ -1008,15 +961,6 @@ class AnswerWindow(QWidget):
         self.load_history(art)
 
     # ---- 历史视图（可接续，§8-2） ----
-    def _resolve_shot(self, raw: str) -> str:
-        """题图路径 → 本机存在才显示；相对路径按题库目录拼（§8-5 同根）。"""
-        if not raw:
-            return ""
-        if self._api is not None:
-            return self._api.resolve_attachment(raw)
-        p = Path(raw)  # 未接后端（纯本地路径）时也别把绝对路径丢了
-        return str(p) if p.is_file() else ""
-
     def load_history(self, article: dict) -> None:
         """渲染一条历史会话，并收编给引擎——下一条追问在其上接续（§8-2）。
 
@@ -1027,16 +971,16 @@ class AnswerWindow(QWidget):
         self._current_fav = bool(article.get("fav"))
         self._sync_fav_btn()
         self.title.setText(str(article.get("title") or "Spore"))
-        shot = self._resolve_shot(str(article.get("attachmentPath") or ""))
+        shot = article_shot(article, self._api) if self._api else ""
         if shot:
             self._show_shot(shot)
-        msgs = _msgs_of(article)
+        msgs = msgs_of(article)
         for m in msgs:
             self._add_history_msg(m)
         adopted = False
         if self._engine is not None:
             adopted = self._engine.load_session(
-                _session_from_article(article, msgs))
+                session_from_article(article, msgs))
         self._set_readonly(not adopted)
         self.show()
         self.raise_()
@@ -1050,6 +994,8 @@ class AnswerWindow(QWidget):
             return
         if m.get("role") == "user":
             if m.get("text"):
+                if m.get("kind") == "chat":
+                    self._append_section("追问")  # 截屏补充（answer）不加
                 self._append_user(m["text"])
             return
         kind = "answer" if m.get("kind") == "answer" else "chat"

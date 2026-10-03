@@ -65,7 +65,7 @@ class LoginWindow(QWidget):
         self.revealed = False
         self._task: _LoginTask | None = None
 
-        self.setWindowTitle("Spore 搜题内容管理系统")
+        self.setWindowTitle("Spore")
         self.resize(420, 320)
 
         root = QVBoxLayout(self)

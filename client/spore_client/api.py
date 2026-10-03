@@ -75,9 +75,6 @@ class ApiClient:
     def rename_category(self, cat_id: str, name: str) -> Any:
         return self._request("PUT", f"/categories/{cat_id}", {"name": name})
 
-    def change_category_status(self, cat_id: str, status: int) -> Any:
-        return self._request("PUT", f"/categories/{cat_id}/status?status={status}")
-
     def delete_category(self, cat_id: str) -> Any:
         return self._request("DELETE", f"/categories/{cat_id}")
 

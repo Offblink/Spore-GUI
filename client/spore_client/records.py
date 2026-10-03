@@ -1,7 +1,10 @@
 """搜题记录页——照 MV3 `review.html` 重设计（用户 2026-10-02 二轮拍板）。
 
-**左栏 280px**：搜索 → `全部/收藏` 分段 → `＋ 新建科目` → **会话列表**：
-- 分类行（hover `✎ ⇄ ×`：改名 / 启停 / 删除）**点击 = 展开/收起**其下会话；
+**左栏 280px**：即时检索（去搜索按钮，键入即过滤；命中时进**第二形态**——
+只平铺命中会话、不摆科目）→ `全部/收藏` 分段（初始选中「全部」）→
+`＋ 新建科目` → **会话列表**（开机自动加载、每次切入标签页自动刷新，无刷新钮）：
+- 分类行（hover `✎ ×`：改名 / 删除；「停用」2026-10-03 用户点名没用已移除）
+  **点击 = 展开/收起**其下会话；
 - 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
 - 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目·点开**模态框**选）+ 标题 +
   `MM-DD HH:mm`，点行 = 右栏显示内容；标题超宽右侧省略号，不挤行尾按钮；
@@ -9,8 +12,9 @@
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
 **右栏 = 选中会话的内容区**：标题 + ★ 收藏 + 状态/时间小字 + 截图（点击用
-系统默认程序打开）+ markdown 消息流 + 底部「接着问」输入行——追问收编给引擎、
-回答在作答浮窗流式继续，落库更新本会话（turn-end 后本页自动刷新）；
+系统默认程序打开；attachmentPath 空时回退消息里的题图路径）+ markdown 消息流
++ 底部「接着问」输入行——追问收编给引擎、**回答在本页右栏直播**（200ms 节流，
+不开悬浮窗），落库更新本会话（turn-end 后本页自动刷新）；
 未选中时右侧居中提示，零记录给引导文案。
 
 纪律（MV3 design.md / 用户拍板）：
@@ -28,7 +32,7 @@ import json
 import re
 
 import markdown
-from PySide6.QtCore import QSize, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -51,15 +55,14 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import (
     CaptionLabel,
-    FluentIcon,
     InfoBar,
     InfoBarPosition,
     MessageBox,
     PrimaryPushButton,
     SearchLineEdit,
-    ToolButton,
 )
 
+from .answer.session import Session, msgs_of
 from .api import ApiClient, ApiError, NetworkError
 
 FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
@@ -112,6 +115,24 @@ class _QueryTask(QThread):
     def run(self):
         try:
             self.ok.emit(self.api.articles(**self.params))
+        except (ApiError, NetworkError) as e:
+            self.failed.emit(str(e))
+
+
+class _CatTask(QThread):
+    """分类树后台取数——load_categories 从前是主线程同步请求，后端半死时
+    UI 卡 15s（用户「点进去狂点刷新都不显示」的嫌疑之一，2026-10-03）。"""
+
+    ok = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, api: ApiClient, parent=None):
+        super().__init__(parent)
+        self.api = api
+
+    def run(self):
+        try:
+            self.ok.emit(_flatten(self.api.category_tree() or []))
         except (ApiError, NetworkError) as e:
             self.failed.emit(str(e))
 
@@ -380,7 +401,7 @@ class SessionCard(QFrame):
 
 # ---------------------------------------------------------------- 分类行（左栏）
 class CatRow(QFrame):
-    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎ ⇄ ×。
+    """MV3 review.js:136-171 buildFolder：纸夹图标 + 名称 + hover ✎ ×。
 
     与 MV3 同语义：**点击 = 展开/收起该科目下的会话**（selected 信号即展开请求，
     展开态记在 RecordsPane._expanded 里，不改右栏内容）。
@@ -389,7 +410,6 @@ class CatRow(QFrame):
     selected = Signal(str, str)            # id, name → 请求展开/收起
     renameRequested = Signal(str, str)
     deleteRequested = Signal(str, str)
-    statusRequested = Signal(str, int)     # id, 目标 status(1/0)
 
     def __init__(self, cat_id: str, name: str, depth: int,
                  status: int = 1, parent=None):
@@ -405,19 +425,13 @@ class CatRow(QFrame):
         self.folder.setFixedSize(15, 11)   # MV3 纯 CSS 纸夹 .fi 15×11 #f9b6d5
         self.folder.setStyleSheet(
             "background:#f9b6d5; border-radius:2px;")
-        # 定长省略同会话行：长科目名也不能把 ✎⇄× 挤出行外（同批反馈）
+        # 定长省略同会话行：长科目名也不能把 ✎× 挤出行外（同批反馈）
         self.name_lbl = _ElidedLabel(name, "#40455f")
         self.rename_btn = QPushButton("✎")
         self.rename_btn.setFixedSize(22, 22)
         self.rename_btn.setCursor(Qt.PointingHandCursor)
         self.rename_btn.clicked.connect(
             lambda: self.renameRequested.emit(self._id, self._name))
-        self.move_btn = QPushButton("⇄")   # U+21C4：原右键「停用/启用」按钮化（§8-3）
-        self.move_btn.setFixedSize(22, 22)
-        self.move_btn.setCursor(Qt.PointingHandCursor)
-        self.move_btn.clicked.connect(
-            lambda: self.statusRequested.emit(
-                self._id, 0 if self._status == 1 else 1))
         self.del_btn = QPushButton("×")
         self.del_btn.setFixedSize(22, 22)
         self.del_btn.setCursor(Qt.PointingHandCursor)
@@ -426,20 +440,11 @@ class CatRow(QFrame):
         h.addWidget(self.folder)
         h.addWidget(self.name_lbl, 1)
         h.addWidget(self.rename_btn)
-        h.addWidget(self.move_btn)
         h.addWidget(self.del_btn)
         self._apply()
 
-    @property
-    def status(self) -> int:
-        return self._status
-
     def set_selected(self, on: bool):
         self._sel = on
-        self._apply()
-
-    def set_status(self, status: int):
-        self._status = status
         self._apply()
 
     def enterEvent(self, ev: QEnterEvent):
@@ -467,14 +472,12 @@ class CatRow(QFrame):
         self.name_lbl.setStyleSheet(
             f"QLabel{{color:{fg}; background:transparent; font-size:13.5px;"
             f" font-weight:600;}}")
-        for btn in (self.rename_btn, self.move_btn, self.del_btn):
+        for btn in (self.rename_btn, self.del_btn):
             btn.setVisible(self._hover)
-        self.move_btn.setToolTip("停用" if self._status == 1 else "启用")
-        for btn in (self.rename_btn, self.move_btn):
-            btn.setStyleSheet(
-                "QPushButton{background:transparent; border:none; font-size:13px;"
-                " color:#a3a8c2; border-radius:6px;}"
-                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
+        self.rename_btn.setStyleSheet(
+            "QPushButton{background:transparent; border:none; font-size:13px;"
+            " color:#a3a8c2; border-radius:6px;}"
+            "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
         self.del_btn.setStyleSheet(
             "QPushButton{background:transparent; border:none; font-size:14px;"
             " color:#a3a8c2; border-radius:6px;}"
@@ -483,7 +486,7 @@ class CatRow(QFrame):
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton:
             self.selected.emit(self._id, self._name)
-        # 右键菜单已废（2026-10-03 死命令 §8-3）：重命名/启停/删除全在行尾按钮上
+        # 无右键菜单（§8-3）；「停用」按钮 2026-10-03 用户点名没用已移除
         super().mousePressEvent(ev)
 
 
@@ -512,6 +515,12 @@ def _detail_html(art: dict) -> str:
         if role == "user":
             txt = m.get("text") or ""
             if txt:
+                # 追问小节标：灰字在用户追问气泡**上方**（2026-10-03 反馈）；
+                # 截屏补充（kind=answer）不是追问，不加
+                if kind == "chat":
+                    parts.append(
+                        '<div style="color:#9aa0bb; font-size:11.5px;'
+                        ' font-weight:600; margin-bottom:3px;">追问</div>')
                 parts.append(
                     '<div style="background:#f2f4fb; border-radius:12px;'
                     ' padding:10px 10px 10px 3px; color:#1a1d2e;'
@@ -577,6 +586,25 @@ def _detail_html(art: dict) -> str:
     return "".join(parts) or '<span style="color:#a3a8c2;">（空会话）</span>'
 
 
+def article_shot(article: dict, api: ApiClient) -> str:
+    """题图定位：attachmentPath 优先，落空回退最后一条带图消息的 imagePath。
+
+    实测 push-attachment 只把文件存进题库目录、**没回写 article 行**
+    （SyncController 注释声称写回但代码没写）——GUI 建的会话 attachmentPath
+    恒空，光解析相对路径永远显示不出来（2026-10-03 用户复测「还是没有截图」）；
+    消息里的 imagePath 是绝对路径，resolve_attachment 直接认（§8-5 同链）。
+    """
+    shot = api.resolve_attachment(str(article.get("attachmentPath") or ""))
+    if shot:
+        return shot
+    for m in reversed(msgs_of(article)):
+        if isinstance(m, dict) and m.get("imagePath"):
+            shot = api.resolve_attachment(str(m["imagePath"]))
+            if shot:
+                return shot
+    return ""
+
+
 class _ClickableLabel(QLabel):
     """可点 QLabel：截图点击 → 系统默认程序打开（不做自绘放大层）。"""
 
@@ -638,6 +666,13 @@ class RecordsPane(QWidget):
         self._session_cards: list[SessionCard] = []
         self._shot_path = ""
         self._shot_pm = QPixmap()
+        self._cat_task: _CatTask | None = None
+        self._live: Session | None = None  # 记录页直播中的接续回合（engine.session）
+        self._live_timer = QTimer(self)    # 流式重渲节流（面板同款 200ms）
+        self._live_timer.setInterval(200)
+        self._live_timer.timeout.connect(self._flush_live)
+        # turn-end 的自动刷新用库里终稿重渲后，跟随一次底部（别把视线弹回顶）
+        self._scroll_bottom_once = False
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -655,8 +690,9 @@ class RecordsPane(QWidget):
 
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("按标题检索…")
-        self.search.searchButton.clicked.connect(self._do_search)
-        self.search.returnPressed.connect(self._do_search)
+        self.search.searchButton.hide()          # 搜索按钮去掉（2026-10-03 反馈）
+        self.search.setTextMargins(0, 0, 34, 0)  # 只给清除按钮留位
+        self.search.textChanged.connect(self._do_search)  # 即时过滤，不等回车
         sv.addWidget(self.search)
 
         seg = QFrame()
@@ -687,11 +723,7 @@ class RecordsPane(QWidget):
             "QPushButton:hover{background:#ffeef7; border-color:#ec4899;"
             " color:#ec4899;}")
         self.new_cat_btn.clicked.connect(self._new_category)
-        self.refresh_btn = ToolButton(FluentIcon.SYNC)
-        self.refresh_btn.setToolTip("刷新")
-        self.refresh_btn.clicked.connect(self.reload)
         cat_row.addWidget(self.new_cat_btn, 1)
-        cat_row.addWidget(self.refresh_btn)
         sv.addLayout(cat_row)
 
         tree_scroll = QScrollArea()
@@ -780,6 +812,13 @@ class RecordsPane(QWidget):
         root.addWidget(side)
         root.addWidget(self.main_box, 1)
 
+        # 初始选中「全部」（2026-10-03 反馈：两个都不选中看着诡异）
+        self._set_seg(False)
+        # 自动加载（2026-10-03 反馈）：以前只在首次切入标签页拉一次，
+        # 点进去可能空白、狂点刷新也不显示——开机即拉，标签页每次切入再拉
+        self.load_categories()
+        self.reload()
+
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         if not self._shot_pm.isNull():   # 窗口尺寸变了重裁截图
@@ -798,11 +837,19 @@ class RecordsPane(QWidget):
         self._task.start()
 
     def load_categories(self):
-        """分类树数据（首次进来/科目改动后调）。"""
-        try:
-            self._cats = _flatten(self.api.category_tree() or [])
-        except (ApiError, NetworkError):
-            self._cats = []  # 拿不到不阻断列表
+        """分类树数据（后台取；到达后重画，拿不到不阻断列表）。
+
+        从前是主线程同步请求——后端半死时 UI 卡 15s、点啥都没反应（§ 反馈）。
+        """
+        if self._cat_task is not None and self._cat_task.isRunning():
+            return
+        self._cat_task = _CatTask(self.api, self)
+        self._cat_task.ok.connect(self._on_cats)
+        self._cat_task.failed.connect(lambda _m: self._render_tree())  # 维持现状
+        self._cat_task.start()
+
+    def _on_cats(self, cats: list[dict]):
+        self._cats = cats
         self._render_tree()
 
     def _on_rows(self, data: dict):
@@ -873,12 +920,15 @@ class RecordsPane(QWidget):
         self._session_cards = []
         rows = self._filtered()
 
-        if self.fav:   # 收藏视图平铺，不摆科目（MV3 review.js:173-196）
+        if self.fav or self.keyword:
+            # 第二形态（2026-10-03 反馈）：收藏分段 / 检索态都平铺命中会话、
+            # 不摆科目（收藏沿 MV3 review.js:173-196，检索同款）
             if not rows:
-                self._tree_box.insertWidget(
-                    self._tree_box.count() - 1,
-                    self._tree_hint("没有收藏的会话。\n点行内 ★ 收藏，"
-                                    "这里只留收藏的。"))
+                hint = (f"没有匹配「{self.keyword}」的会话。"
+                        if self.keyword else
+                        "没有收藏的会话。\n点行内 ★ 收藏，这里只留收藏的。")
+                self._tree_box.insertWidget(self._tree_box.count() - 1,
+                                             self._tree_hint(hint))
             for art in rows:
                 self._add_session(art, 0)
             return
@@ -908,7 +958,6 @@ class RecordsPane(QWidget):
             row.selected.connect(self._toggle_expand)
             row.renameRequested.connect(self._rename_category)
             row.deleteRequested.connect(self._delete_category)
-            row.statusRequested.connect(self._toggle_category)
             self._tree_box.insertWidget(self._tree_box.count() - 1, row)
             if opened:
                 members = grouped.get(cid) or []
@@ -941,28 +990,35 @@ class RecordsPane(QWidget):
             else "左侧选一条会话查看内容")
         self.hint_lbl.show()
 
-    def _render_detail(self, art: dict):
+    def _render_detail(self, art: dict, keep_shot: bool = False):
         self.title_lbl.setText(str(art.get("title") or "新会话"))
         status = str(art.get("status") or "")
         self.meta_lbl.setText(
             f"{STATUS_LABEL.get(status, status)} · {_fmt_stamp(art.get('updateTime'))}")
         self._sync_star()
-        # 截图：本地图等比缩放（最大高 320），点击用系统默认程序打开
-        # attachmentPath 是相对题库目录的路径 → 统一走 ApiClient 解析（§8-5）
-        self._shot_path = self.api.resolve_attachment(
-            str(art.get("attachmentPath") or ""))
-        self._shot_pm = QPixmap(self._shot_path) if self._shot_path else QPixmap()
-        if self._shot_pm.isNull():
-            self.shot_lbl.clear()
-            self.shot_lbl.hide()
-        else:
-            self._scale_shot()
-            self.shot_lbl.show()
+        # 截图：本地图等比缩放（最大高 320），点击用系统默认程序打开。
+        # attachmentPath 恒空时回退消息里的题图（push-attachment 不回写行）；
+        # 直播重渲（keep_shot）不动截图，别每 200ms 重解码一遍题图
+        if not (keep_shot and not self._shot_pm.isNull()):
+            self._shot_path = article_shot(art, self.api)
+            self._shot_pm = (QPixmap(self._shot_path)
+                             if self._shot_path else QPixmap())
+            if self._shot_pm.isNull():
+                self.shot_lbl.clear()
+                self.shot_lbl.hide()
+            else:
+                self._scale_shot()
+                self.shot_lbl.show()
         # 消息流：markdown HTML（think 绝不渲染）
         self.body.setHtml(
             '<div style="font-size:15px; line-height:1.6; color:#1a1d2e;">'
             f"{_detail_html(art)}</div>")
-        self.body.verticalScrollBar().setValue(0)
+        bar = self.body.verticalScrollBar()
+        if self._scroll_bottom_once:   # 接续 turn-end 后的首次重渲：留在底部
+            self._scroll_bottom_once = False
+            bar.setValue(bar.maximum())
+        else:
+            bar.setValue(0)
 
     def _scale_shot(self):
         if self._shot_pm.isNull():
@@ -993,7 +1049,7 @@ class RecordsPane(QWidget):
             self._toggle_fav(str(row.get("id")), bool(row.get("fav")))
 
     def _send_followup(self):
-        """记录页接续追问：带当前会话 id 交给主窗（回答在作答浮窗继续）。
+        """记录页接续追问：带当前会话 id 交给主窗（回答在**本页右栏**直播）。
 
         这里不清输入框——主窗判定可发（引擎没在跑别的回合）成功后才清，
         被拒时文字留住。
@@ -1001,6 +1057,42 @@ class RecordsPane(QWidget):
         text = self.followup_input.text().strip()
         if text and self.current_id:
             self.followupRequested.emit(self.current_id, text)
+
+    # ---------- 接续直播（2026-10-03 反馈：追问就地渲染，不开悬浮窗） ----------
+    def follow_turn(self, sess: Session):
+        """记录页发起的接续回合开跑：右栏直播 engine.session，200ms 节流重渲。"""
+        self._live = sess
+
+    def on_engine_event(self, sess: Session, ev: dict):
+        """引擎事件 → 直播重渲。只认自己那场（sess 必须 is _live）——
+        别的回合（Alt+S 截屏等）绝不能灌进本页视图。"""
+        if sess is not self._live:
+            return
+        if ev.get("type") == "think-delta":
+            return  # think 不渲染（全应用纪律）
+        if ev.get("type") == "turn-end":
+            self._flush_live()    # 收尾强制渲最后一次
+            self._live = None     # 终稿交给 turn-end 后的 reload 用库里数据覆盖
+            self._scroll_bottom_once = True
+            return
+        if not self._live_timer.isActive():
+            self._live_timer.start()
+
+    def _flush_live(self):
+        self._live_timer.stop()
+        if self._live is None or str(self._live.backend_id) != self.current_id:
+            return   # 用户已切走：不许把直播灌进别的会话视图
+        self._render_detail(self._live_art(), keep_shot=True)
+        bar = self.body.verticalScrollBar()
+        bar.setValue(bar.maximum())   # 流式期间跟随底部
+
+    def _live_art(self) -> dict:
+        """当前选中行 + 直播会话实时状态 → _render_detail 认的 art 形状。"""
+        art = dict(self._current_row() or {})
+        art["title"] = self._live.title
+        art["status"] = self._live.status
+        art["messages"] = [m.to_dict() for m in self._live.messages]
+        return art
 
     # ---------- 交互：分段 / 检索 / 展开 ----------
     def _set_seg(self, fav: bool):
@@ -1031,6 +1123,7 @@ class RecordsPane(QWidget):
         if row is None:
             return
         self.current_id = art_id
+        self._scroll_bottom_once = False   # 手动点开：照旧从顶部读
         for card in self._session_cards:
             card.set_selected(card._id == art_id)
         self._render_detail(row)
@@ -1123,13 +1216,6 @@ class RecordsPane(QWidget):
             self.load_categories()
         except (ApiError, NetworkError) as e:
             self._err(f"改名失败：{e}")
-
-    def _toggle_category(self, cat_id: str, status: int):
-        try:
-            self.api.change_category_status(cat_id, status)
-            self.load_categories()
-        except (ApiError, NetworkError) as e:
-            self._err(f"启停失败：{e}")
 
     def _delete_category(self, cat_id: str, name: str):
         box = MessageBox("删除这个科目？",

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -82,3 +83,47 @@ class Session:
 
     def touch(self):
         self.updated = _now_ms()
+
+
+def msgs_of(article: dict) -> list:
+    """ArticleVO.messages（后端 toVo 顶层直带）；兼容详情 content.messages/JSON 串。"""
+    msgs = article.get("messages")
+    if isinstance(msgs, list):
+        return msgs
+    content = article.get("content")
+    if isinstance(content, dict):
+        msgs = content.get("messages")
+        return msgs if isinstance(msgs, list) else []
+    if isinstance(content, str):
+        try:
+            data = json.loads(content)
+        except (ValueError, TypeError):
+            return []
+        msgs = data.get("messages") if isinstance(data, dict) else None
+        return msgs if isinstance(msgs, list) else []
+    return []
+
+
+_MSG_FIELDS = ("role", "kind", "text", "no", "title", "ans", "why",
+               "verifyVerdict", "verifyNote", "hasImage", "imagePath",
+               "verifyRan", "verifySkipped", "verifyPending", "tools", "ts")
+
+
+def session_from_article(article: dict, msgs: list) -> Session:
+    """ArticleVO → 可接续的 Session：backend_id 带上，turn-end 落库走 PUT（§8-2）。
+
+    只搬 Msg.to_dict 会落库的字段（think 不渲染也不进上下文，不搬）；
+    缺键走 Msg 默认值，缺 role 的畸形行直接跳过。
+    """
+    sess = Session(
+        title=str(article.get("title") or "新会话"),
+        backend_id=str(article.get("id") or ""),
+        fav=bool(article.get("fav")),
+        status=str(article.get("status") or ""),
+    )
+    for m in msgs:
+        if not isinstance(m, dict) or "role" not in m:
+            continue
+        kw = {k: m[k] for k in _MSG_FIELDS if k in m and m[k] not in (None, "")}
+        sess.messages.append(Msg(**kw))
+    return sess
