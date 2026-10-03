@@ -193,7 +193,10 @@ class MainWindow(FluentWindow):
             self.avatar_btn.setToolTip(f"{nick} · 手机扫码配对")
 
     def eventFilter(self, obj, ev):
-        if obj is self._qr_pop and ev.type() == QEvent.Hide:
+        # super().__init__ 期间 Qt 就会把事件送进来（qframeless 过滤器链），
+        # 那时 _qr_pop 还没建——漏了这个守卫整个 FluentWindow 构造直接崩
+        # （2026-10-03「客户端都跑不起来」根因）
+        if obj is getattr(self, "_qr_pop", None) and ev.type() == QEvent.Hide:
             self._qr_hide_ts = time.monotonic()   # 外部点击把它收掉了
         return super().eventFilter(obj, ev)
 
@@ -405,8 +408,10 @@ class MainWindow(FluentWindow):
         self.activateWindow()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason):
+        # PySide6 6.10：ActivationReason.DoubleTrigger 改名 DoubleClick
+        #（旧名 AttributeError，托盘点击 2026-10-03 日志实锤）
         if reason in (QSystemTrayIcon.ActivationReason.Trigger,
-                      QSystemTrayIcon.ActivationReason.DoubleTrigger):
+                      QSystemTrayIcon.ActivationReason.DoubleClick):
             self._show_main()
 
     def _really_quit(self):
