@@ -3,13 +3,15 @@
 **左栏 280px**：搜索 → `全部/收藏` 分段 → `＋ 新建科目` → **会话列表**：
 - 分类行（hover `✎ ⇄ ×`：改名 / 启停 / 删除）**点击 = 展开/收起**其下会话；
 - 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
-- 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目）+ 标题 + `MM-DD HH:mm`，
-  点行 = 右栏显示内容；
+- 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目·点开**模态框**选）+ 标题 +
+  `MM-DD HH:mm`，点行 = 右栏显示内容；标题超宽右侧省略号，不挤行尾按钮；
 - **无右键菜单**（2026-10-03 用户死命令：行内操作全按钮化，§8-3）；
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
 **右栏 = 选中会话的内容区**：标题 + ★ 收藏 + 状态/时间小字 + 截图（点击用
-系统默认程序打开）+ markdown 消息流；未选中时右侧居中提示，零记录给引导文案。
+系统默认程序打开）+ markdown 消息流 + 底部「接着问」输入行——追问收编给引擎、
+回答在作答浮窗流式继续，落库更新本会话（turn-end 后本页自动刷新）；
+未选中时右侧居中提示，零记录给引导文案。
 
 纪律（MV3 design.md / 用户拍板）：
 - 一次 `articles(page=1, size=200)` 拉全量（后端 size 上限 200），分组/关键词/
@@ -40,8 +42,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMenu,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QTextBrowser,
     QVBoxLayout,
@@ -53,6 +55,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     MessageBox,
+    PrimaryPushButton,
     SearchLineEdit,
     ToolButton,
 )
@@ -167,6 +170,82 @@ class _InputDialog(QDialog):
         return dlg.edit.text().strip() if dlg.exec() == QDialog.Accepted else None
 
 
+# ---------------------------------------------------------------- 移入科目模态框
+class _MoveDialog(QDialog):
+    """「移入科目」模态框（2026-10-03 用户点名：不要弹出菜单，要模态）。
+
+    科目单选（按层级缩进）+「未分组」；预选当前归属，取消 = None。
+    """
+
+    def __init__(self, cats: list[dict], current: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("移入科目")
+        self.setModal(True)
+        self.setFixedWidth(340)
+        self.setStyleSheet(
+            "QDialog{background:#ffffff; border-radius:16px;}"
+            "QRadioButton{font-size:14px; color:#2b2f4a; spacing:8px;"
+            " padding:4px 0;}"
+            "QRadioButton::indicator{width:16px; height:16px; border-radius:9px;"
+            " border:1px solid #cfd3e6; background:#fafbfe;}"
+            "QRadioButton::indicator:checked{border:5px solid #ec4899;"
+            " background:#ffffff;}"
+            "QPushButton{border:none; border-radius:11px; padding:9px 20px;"
+            " font-weight:600; font-size:14px;}"
+            "QPushButton#cancel{background:#f1f3fb; color:#4a4f6b;}"
+            "QPushButton#cancel:hover{background:#e8ebf7;}"
+            "QPushButton#ok{background:#ff3b5c; color:#ffffff;}"
+            "QPushButton#ok:hover{background:#ef1f45;}")
+        self._targets: list[str] = []
+        self._radios: list[QRadioButton] = []
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 20, 18)
+        root.setSpacing(12)
+        head = QLabel("移入科目")
+        head.setStyleSheet("QLabel{font-size:16px; font-weight:650;"
+                           " color:#1a1d2e; background:transparent;}")
+        root.addWidget(head)
+        opts = QVBoxLayout()
+        opts.setSpacing(6)
+        rows = [("", "未分组")] + [
+            (str(c["id"]), "　" * int(c.get("depth", 0)) + str(c["name"]))
+            for c in cats]
+        for cid, label in rows:
+            rb = QRadioButton(label)
+            self._radios.append(rb)
+            self._targets.append(cid)
+            opts.addWidget(rb)
+        root.addLayout(opts)
+        checked = (self._targets.index(current)
+                   if current in self._targets else 0)  # 归属失效 → 落回未分组
+        self._radios[checked].setChecked(True)
+        btns = QHBoxLayout()
+        btns.setSpacing(10)
+        btns.addStretch(1)
+        cancel = QPushButton("取消")
+        cancel.setObjectName("cancel")
+        ok = QPushButton("保存")
+        ok.setObjectName("ok")
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        root.addLayout(btns)
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self.accept)
+
+    def _selected(self) -> str:
+        """选中的目标科目 id；「未分组」与无选中都是空串。"""
+        for cid, rb in zip(self._targets, self._radios, strict=False):
+            if rb.isChecked():
+                return cid
+        return ""
+
+    @staticmethod
+    def get_target(cats: list[dict], current: str,
+                   parent=None) -> str | None:
+        dlg = _MoveDialog(cats, current, parent)
+        return dlg._selected() if dlg.exec() == QDialog.Accepted else None
+
+
 # ---------------------------------------------------------------- 会话行（左栏）
 class SessionCard(QFrame):
     """MV3 review.html:50-83 + review.js:71-133 行剖：★ 标题 时间 ✎ ⇄ ×。
@@ -178,7 +257,7 @@ class SessionCard(QFrame):
     renameRequested = Signal(str, str)   # id, 标题
     deleteRequested = Signal(str, str)   # id, 标题
     favToggled = Signal(str, bool)       # id, 当前 fav
-    moveRequested = Signal(str, object)  # id, ⇄ 按钮全局位置（右键菜单已废 §8-3）
+    moveRequested = Signal(str)          # id → 打开「移入科目」模态框
 
     def __init__(self, row: dict, depth: int = 0, parent=None):
         super().__init__(parent)
@@ -202,11 +281,10 @@ class SessionCard(QFrame):
         col = QVBoxLayout()
         col.setSpacing(2)
         col.setContentsMargins(0, 0, 0, 0)
-        self.title_lbl = QLabel(self._title)
-        self.title_lbl.setStyleSheet(
-            "QLabel{font-size:13.5px; color:#2b2f4a; background:transparent;}")
-        # 不设 TextSelectableByMouse：label 会吞掉按下事件不冒泡到 frame，
-        # 点标题开不了会话、只有点左侧空白才有反应（2026-10-03 §8-4）
+        # 标题定长：_ElidedLabel 最小宽 60 + 超宽省略号——长标题不再把行尾
+        # 按钮挤出行外（2026-10-03 用户反馈「只显示了两个按钮」）；
+        # 也不设 TextSelectableByMouse：label 吞按下事件会开不了会话（§8-4）
+        self.title_lbl = _ElidedLabel(self._title, "#2b2f4a")
         self.time_lbl = QLabel(_fmt_stamp(row.get("updateTime")))
         self.time_lbl.setStyleSheet(
             "QLabel{font-size:11.5px; color:#a3a8c2; background:transparent;}")
@@ -223,8 +301,7 @@ class SessionCard(QFrame):
         self.move_btn.setCursor(Qt.PointingHandCursor)
         self.move_btn.setToolTip("移入科目")
         self.move_btn.clicked.connect(
-            lambda: self.moveRequested.emit(
-                self._id, self.move_btn.mapToGlobal(self.move_btn.rect().center())))
+            lambda: self.moveRequested.emit(self._id))
         self.del_btn = QPushButton("×")       # U+00D7
         self.del_btn.setFixedSize(24, 24)
         self.del_btn.setCursor(Qt.PointingHandCursor)
@@ -279,6 +356,7 @@ class SessionCard(QFrame):
             btn.setVisible(self._hover or self._sel)
         title_fg = "#c2185b" if self._sel else "#2b2f4a"
         title_w = "600" if self._sel else "normal"
+        self.title_lbl.set_color(title_fg)   # 自绘走 _color，样式表色管不到
         self.title_lbl.setStyleSheet(
             f"QLabel{{font-size:13.5px; color:{title_fg}; font-weight:{title_w};"
             " background:transparent;}")
@@ -327,11 +405,8 @@ class CatRow(QFrame):
         self.folder.setFixedSize(15, 11)   # MV3 纯 CSS 纸夹 .fi 15×11 #f9b6d5
         self.folder.setStyleSheet(
             "background:#f9b6d5; border-radius:2px;")
-        self.name_lbl = QLabel(name)
-        if status != 1:
-            self.name_lbl.setStyleSheet(
-                "QLabel{color:#a3a8c2; background:transparent; font-size:13.5px;}")
-        # 不设 TextSelectableByMouse：吞按下事件会让点科目名不展开（§8-4 同类）
+        # 定长省略同会话行：长科目名也不能把 ✎⇄× 挤出行外（同批反馈）
+        self.name_lbl = _ElidedLabel(name, "#40455f")
         self.rename_btn = QPushButton("✎")
         self.rename_btn.setFixedSize(22, 22)
         self.rename_btn.setCursor(Qt.PointingHandCursor)
@@ -388,6 +463,7 @@ class CatRow(QFrame):
             f"QFrame#catRow{{background:{bg}; border-radius:10px;}}"
             "QFrame#catRow:hover{background:#f2f4fb;}")
         self.name_lbl.setTextFormat(Qt.TextFormat.PlainText)
+        self.name_lbl.set_color(fg)         # 自绘走 _color，样式表色管不到
         self.name_lbl.setStyleSheet(
             f"QLabel{{color:{fg}; background:transparent; font-size:13.5px;"
             f" font-weight:600;}}")
@@ -522,6 +598,11 @@ class _ElidedLabel(QLabel):
             f"QLabel{{font-size:15px; font-weight:600; color:{self._color};"
             " background:transparent;}")
 
+    def set_color(self, color: str):
+        """换自绘字色（paintEvent 不走样式表的 color，得手动同步）。"""
+        self._color = color
+        self.update()
+
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
         return QSize(min(hint.width(), 340), hint.height())
@@ -541,6 +622,8 @@ class _ElidedLabel(QLabel):
 
 # ---------------------------------------------------------------- 主页面
 class RecordsPane(QWidget):
+    followupRequested = Signal(str, str)   # art_id, 追问原文 → 主窗收编+代发
+
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
         self.setObjectName("recordsPage")  # FluentWindow.addSubInterface 要求非空
@@ -675,6 +758,22 @@ class RecordsPane(QWidget):
         self.body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
         dv.addWidget(self.body, 1)
 
+        # 接续对话输入行（2026-10-03 用户点名：记录页历史会话要能追问）
+        # 发出后主窗把该会话收编给引擎，回答在作答浮窗流式继续，落库更新本会话
+        foot = QHBoxLayout()
+        foot.setSpacing(8)
+        self.followup_input = QLineEdit()
+        self.followup_input.setPlaceholderText(
+            "接着问…（Enter 发送 · 回答在作答浮窗继续）")
+        self.followup_send = PrimaryPushButton("↑")
+        self.followup_send.setFixedSize(40, 40)
+        self.followup_send.setToolTip("发送")
+        foot.addWidget(self.followup_input, 1)
+        foot.addWidget(self.followup_send)
+        dv.addLayout(foot)
+        self.followup_send.clicked.connect(self._send_followup)
+        self.followup_input.returnPressed.connect(self._send_followup)
+
         mv.addWidget(self.detail_box, 1)
         self.detail_box.hide()
 
@@ -764,7 +863,7 @@ class RecordsPane(QWidget):
         card.renameRequested.connect(self._rename_session)
         card.deleteRequested.connect(self._delete_session)
         card.favToggled.connect(self._toggle_fav)
-        card.moveRequested.connect(self._move_menu)
+        card.moveRequested.connect(self._move_dialog)
         self._tree_box.insertWidget(self._tree_box.count() - 1, card)
         self._session_cards.append(card)
 
@@ -893,6 +992,16 @@ class RecordsPane(QWidget):
         if row is not None:
             self._toggle_fav(str(row.get("id")), bool(row.get("fav")))
 
+    def _send_followup(self):
+        """记录页接续追问：带当前会话 id 交给主窗（回答在作答浮窗继续）。
+
+        这里不清输入框——主窗判定可发（引擎没在跑别的回合）成功后才清，
+        被拒时文字留住。
+        """
+        text = self.followup_input.text().strip()
+        if text and self.current_id:
+            self.followupRequested.emit(self.current_id, text)
+
     # ---------- 交互：分段 / 检索 / 展开 ----------
     def _set_seg(self, fav: bool):
         self.fav = 1 if fav else 0
@@ -969,22 +1078,19 @@ class RecordsPane(QWidget):
                         parent=self, duration=2200,
                         position=InfoBarPosition.TOP)
 
-    def _move_menu(self, art_id: str, pos):
-        """会话行 ⇄ 按钮：在按钮下弹「移入科目」菜单（右键菜单已废，§8-3）。"""
+    def _move_dialog(self, art_id: str):
+        """会话行 ⇄ 按钮 → 「移入科目」模态框（2026-10-03 用户点名不要菜单）。"""
         if not self._cats:
             InfoBar.warning("还没有科目", "先点「＋ 新建科目」，再把会话移进去",
                             parent=self, duration=2600,
                             position=InfoBarPosition.TOP)
             return
-        menu = QMenu(self)
-        move = menu.addMenu("移动到科目")
-        for c in self._cats:
-            act = move.addAction(str(c["name"]))
-            act.triggered.connect(
-                lambda _=False, cid=str(c["id"]), aid=art_id: self._move(aid, cid))
-        menu.addAction("移出科目（未分组）",
-                       lambda aid=art_id: self._move(aid, ""))
-        menu.exec(pos if hasattr(pos, "x") else self.mapToGlobal(pos))
+        cur = next((str(r.get("categoryId") or "") for r in self.rows
+                    if str(r.get("id")) == art_id), "")
+        target = _MoveDialog.get_target(self._cats, cur, self.window())
+        if target is None or target == cur:
+            return          # 取消，或本来就在这个科目
+        self._move(art_id, target)
 
     def _move(self, art_id: str, cat_id: str):
         try:

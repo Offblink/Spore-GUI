@@ -1,10 +1,17 @@
-"""place_near 纯函数 + 历史会话转 Session：04 §四定位与 2026-10-03 §8-2 接续。
+"""place_near 纯函数 + 历史会话转 Session + 外部代发追问。
 
 浮窗定位错 → 用户找不到回答面板（钉死贴选区与两条钳位规则）；
-历史会话转 Session 丢 backend_id/消息 → 追问开新会话、落库走错接口（§8-2）。
+历史会话转 Session 丢 backend_id/消息 → 追问开新会话、落库走错接口（§8-2）；
+记录页「接着问」走 panel.send_text 进同一条发送链（2026-10-03 反馈）。
 """
 
-from spore_client.answer_window import _msgs_of, _session_from_article, place_near
+from spore_client.answer.settings import LlmSettings
+from spore_client.answer_window import (
+    AnswerWindow,
+    _msgs_of,
+    _session_from_article,
+    place_near,
+)
 
 PANEL = (460, 560)        # AnswerWindow 默认尺寸
 SCREEN = (1493, 933)      # 本机逻辑分辨率（150% 缩放）
@@ -65,3 +72,14 @@ def test_session_from_article_carries_backend_id_and_msgs():
     assert [m.role for m in sess.messages] == ["user", "assistant"]
     assert sess.messages[0].ts == 5            # ts 是排序依据，别丢
     assert sess.messages[1].tools == ["检索 SQA 定义"]
+
+
+# ---------- 记录页代发追问（2026-10-03 反馈） ----------
+
+def test_send_text_emits_followup_like_input_box(qapp):
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    got: list = []
+    win.followupRequested.connect(got.append)
+    assert win.send_text("  在吗 ") is True
+    assert got == ["在吗"]                 # 与输入框 _send 同一条信号链
+    assert win.send_text("   ") is False   # 空文本不发

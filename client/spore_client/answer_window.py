@@ -783,6 +783,14 @@ class AnswerWindow(QWidget):
         self.input.clear()
         self.followupRequested.emit(text)
 
+    def send_text(self, text: str) -> bool:
+        """外部代输入的追问（记录页接续入口）：走与输入框同一条发送链。"""
+        text = (text or "").strip()
+        if not text:
+            return False
+        self.followupRequested.emit(text)
+        return True
+
     def _cancel(self):
         if self._engine is not None:
             self._engine.cancel()

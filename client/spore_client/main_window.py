@@ -69,6 +69,7 @@ class MainWindow(FluentWindow):
         self.answer_window.attach_engine(self.engine)
         self.answer_window.attach_api(api)  # 面板 💬 会话列表 / ★ 收藏要打后端
         self.answer_window.followupRequested.connect(self._followup)
+        self.records.followupRequested.connect(self._records_followup)
 
         # 截屏完成 → 喂给作答浮窗（P3 只落盘的那一步现在接上了）
         self._capture = CaptureController(self._on_captured)
@@ -156,6 +157,23 @@ class MainWindow(FluentWindow):
         if not self.engine.send_followup(text):
             self._notify("warning", "稍等", "当前回合还没结束", 2500)
 
+    def _records_followup(self, art_id: str, text: str):
+        """记录页「接着问」：收编该会话给引擎 → 作答浮窗继续回答。
+
+        落库走 PUT 更新原会话（engine.session.backend_id，§8-2 同链）；
+        引擎正忙时拒发且**不清输入框**，文字留住等下一次。
+        """
+        if self.engine.is_busy():
+            self._notify("warning", "稍等", "当前回合还没结束", 2500)
+            return
+        row = next((r for r in self.records.rows
+                    if str(r.get("id")) == art_id), None)
+        if row is None:
+            return
+        self.answer_window.load_history(row)   # 渲染历史 + load_session 收编
+        if self.answer_window.send_text(text):
+            self.records.followup_input.clear()
+
     # ---------- 引擎事件（worker 线程 emit → engineEvent 队列回主线程） ----------
     _DELTA_TYPES = {"answer-delta", "chat-delta", "think-delta", "verify-delta"}
 
@@ -212,6 +230,7 @@ class MainWindow(FluentWindow):
                     else False)
             LOG.info("persisted turn id=%s put=%s in %.0fms", art_id,
                      bool(sess.backend_id), (time.monotonic() - t0) * 1000)
+            self.records.reload()  # 记录页随后看到接续落库后的新消息/状态
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
