@@ -2,8 +2,14 @@
 
 import json
 
-from spore_client.pairing import (_is_lan_ipv4, api_base_for_phone, build_payload,
-                                  initial_of, lan_ipv4, rewrite_loopback)
+from spore_client.pairing import (
+    _is_lan_ipv4,
+    api_base_for_phone,
+    build_payload,
+    initial_of,
+    lan_ipv4,
+    rewrite_loopback,
+)
 
 
 def test_initial_of_takes_first_nonblank_char_upper():

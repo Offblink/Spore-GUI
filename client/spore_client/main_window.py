@@ -37,8 +37,7 @@ from .capture import CaptureController, HotkeyManager
 from .help_page import HelpPane
 from .log import get_logger
 from .log_page import LogPane
-from .pairing import (LanTask, api_base_for_phone, build_payload, initial_of,
-                      payload_image)
+from .pairing import LanTask, api_base_for_phone, build_payload, initial_of, payload_image
 from .records import RecordsPane
 from .settings import SettingsPane
 from .settings_store import apply_to_llm
