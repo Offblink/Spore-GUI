@@ -14,5 +14,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# 客户端打包（exe 走 GitHub Release，不入库）
+client/.venv-build/
+client/build/
+client/dist/
+
 # 题库目录（题图运行时数据，设置页可切换到仓库根下任意目录）
 herstory/

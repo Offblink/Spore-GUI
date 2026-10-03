@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
+from . import __version__
 from .api import ApiClient
 from .app_icon import app_icon
 from .log import get_logger
@@ -63,6 +64,8 @@ def _on_wake(server: QLocalServer, app: QApplication) -> None:
 def main() -> int:
     # 任务栏身份（否则 pythonw 的窗口可能挂到别的控制台身份下）
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Spore.Desktop")
+    LOG.info("Spore client v%s starting (frozen=%s)",
+             __version__, getattr(sys, "frozen", False))
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
     app.setWindowIcon(app_icon())  # = MV3 扩展图标（用户 2026-10-02 拍板）

@@ -9,11 +9,32 @@
 | 后端 `src/` | Spring Boot + MyBatis-Plus + MySQL | 本机 8080 提供 REST 接口、题图存储、账号与同步 |
 | 客户端 `client/` | Python 3.13 + PySide6（Fluent Widgets） | 截图作答、搜题记录、设置、帮助 |
 
+## 下载
+
+到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载最新版
+`Spore-<版本>-win64.exe`（客户端，单文件）。**注意**：客户端只负责界面，
+后端要另外跑（见「快速开始」第 1–2 步：装好 JDK 8 / Maven / MySQL 后，
+双击 `start-spore.bat`，或在仓库里单独启动后端）。
+
 ## 快速开始
 
 1. 准备环境：JDK 8、Maven、Python 3.13（本机已装好即可）。
 2. 双击仓库根目录的 `start-spore.bat`：自动拉起后端（已在跑则跳过）与客户端。
 3. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
+
+### 从源码构建客户端 exe
+
+```bash
+# 1) 干净构建 venv（别用开发 venv：它会带进全局 PyQt5 / torch）
+python -m venv --without-pip client/.venv-build
+python -m pip --python client/.venv-build/Scripts/python.exe install \
+  "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" \
+  pyinstaller httpx markdown qrcode Pillow keyboard
+# 2) 构建 + 自检（图标、产物、窗口存活、sha256）
+python client/tools/build_exe.py
+```
+
+产物 `client/dist/Spore-<版本>-win64.exe`；打包配方在 `client/Spore.spec`。
 
 ## 功能
 
