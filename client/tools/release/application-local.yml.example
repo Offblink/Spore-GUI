@@ -1,0 +1,7 @@
+# 复制本文件为 application-local.yml（与 jar 同目录），填上你的 MySQL 账号口令。
+# 口令只留在你本机，不要提交到 git、不要随包分发。
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/spore_cms?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: CHANGE_ME

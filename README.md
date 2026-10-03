@@ -11,10 +11,16 @@
 
 ## 下载
 
-到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载最新版
-`Spore-<版本>-win64.exe`（客户端，单文件）。**注意**：客户端只负责界面，
-后端要另外跑（见「快速开始」第 1–2 步：装好 JDK 8 / Maven / MySQL 后，
-双击 `start-spore.bat`，或在仓库里单独启动后端）。
+到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化，推荐）**：
+内含客户端 `Spore.exe`、后端 jar、`启动 Spore.bat`、`schema.sql`（建库脚本）与数据库口令模板。
+首次准备（只做一次）：
+
+1. 安装 **JDK 8** 与 **MySQL**，导入表结构：`mysql -u root -p < schema.sql`
+2. 复制 `application-local.yml.example` 为 `application-local.yml`，填入你的 MySQL 账号口令
+3. 双击 `启动 Spore.bat`（先起后端、再开客户端；后端已在跑则跳过）
+
+> 单个 `Spore-<版本>-win64.exe` 也挂在 Releases 上，但它**只是客户端**，需要你自备后端。
+> 用源码跑整套（含后端开发）见下方「快速开始」。
 
 ## 快速开始
 
