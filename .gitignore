@@ -21,3 +21,6 @@ client/dist/
 
 # 题库目录（题图运行时数据，设置页可切换到仓库根下任意目录）
 herstory/
+
+# 打包时由 tools/make_icon.py 重生成（勿与 spore_client/assets 混淆）
+client/assets/
