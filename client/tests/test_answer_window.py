@@ -53,6 +53,22 @@ def test_panel_sits_fully_on_screen():
         assert 0 <= y <= SCREEN[1] - PANEL[1]
 
 
+# ---------- 渐显/渐隐（2026-10-03 反馈：整窗 α 动画） ----------
+
+def test_show_and_hide_fade_settle_at_full_and_hidden(qapp):
+    from PySide6.QtTest import QTest
+
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    win.show_fade()
+    QTest.qWait(400)                      # 180ms 动画 + 余量
+    assert win.isVisible()
+    assert abs(win.windowOpacity() - 1.0) < 1e-6
+    win.hide_fade()
+    QTest.qWait(400)
+    assert not win.isVisible()            # 淡出后才收窗
+    assert abs(win.windowOpacity() - 1.0) < 1e-6   # α 复位，下次从 0 淡入
+
+
 # ---------- 追问小节标位置（2026-10-03 反馈） ----------
 
 def test_chat_start_puts_followup_label_above_user_bubble(qapp):

@@ -24,7 +24,14 @@ from __future__ import annotations
 import re
 
 import markdown
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    Qt,
+    QThread,
+    QTimer,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import QFontMetrics, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,7 +57,7 @@ from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .log import get_logger
-from .records import _InputDialog, article_shot
+from .records import _InputDialog, article_shot, purge_article_files
 
 LOG = get_logger()
 
@@ -337,14 +344,55 @@ class AnswerWindow(QWidget):
         self._md_timer.setInterval(200)
         self._md_timer.timeout.connect(self._flush)
 
+        # 整窗 α 渐显/渐隐（2026-10-03 反馈：面板显隐不要硬切）
+        self._fade = QVariantAnimation(self)
+        self._fade.setDuration(180)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade.valueChanged.connect(self.setWindowOpacity)
+        self._fade_after = None            # 淡出完成后的动作（收窗）
+        self._fade.finished.connect(self._on_fade_done)
+
         self.resize(460, 560)
-        self.close_btn.clicked.connect(self.hide)
+        self.close_btn.clicked.connect(self.hide_fade)
         self.sessions_btn.clicked.connect(self._toggle_sessions)
         self.fav_btn.clicked.connect(self._toggle_fav)
         self.send_btn.clicked.connect(self._send)
         self.input.returnPressed.connect(self._send)
         self.cancel_btn.clicked.connect(self._cancel)
         self._build_sessions_popup()
+
+    # ---------- 渐显/渐隐（整窗 α，2026-10-03 反馈） ----------
+    def show_fade(self):
+        """显示并淡入；已在显示中则只补足 α，不重播整段动画。"""
+        self.raise_()
+        self.activateWindow()
+        if not self.isVisible():
+            self.setWindowOpacity(0.0)
+            self.show()
+        if self.windowOpacity() < 1.0:
+            self._fade_to(1.0, None)
+
+    def hide_fade(self):
+        """淡出后收窗（Esc / × / Alt+Z 走这条）。"""
+        if not self.isVisible():
+            return
+        self._fade_to(0.0, self._finish_hide)
+
+    def _fade_to(self, value: float, after):
+        self._fade.stop()                  # stop 不发 finished，动作不会串
+        self._fade.setStartValue(float(self.windowOpacity()))
+        self._fade.setEndValue(value)
+        self._fade_after = after
+        self._fade.start()
+
+    def _on_fade_done(self):
+        after, self._fade_after = self._fade_after, None
+        if after is not None:
+            after()
+
+    def _finish_hide(self):
+        self.hide()
+        self.setWindowOpacity(1.0)         # 复位：下次 show_fade 从 0 起
 
     # ---------- 拖拽 ----------
     def mousePressEvent(self, ev):
@@ -373,9 +421,7 @@ class AnswerWindow(QWidget):
         self._show_shot(image_path)
         if supplement:
             self._append_user(supplement)  # 截屏补充也画成用户气泡
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        self.show_fade()
         self.input.setFocus()  # 直接可追问；Esc 仍由本窗 keyPressEvent 接住隐藏
         LOG.info("panel shown at (%d,%d) size=%dx%d sel=%s",
                  self.x(), self.y(), self.width(), self.height(), sel)
@@ -944,6 +990,7 @@ class AnswerWindow(QWidget):
             return
         try:
             self._api.delete_article(art_id)
+            purge_article_files(art, self._api)   # 删会话连带删题图
         except (ApiError, NetworkError) as e:
             self._toast(False, "删除失败", str(e), 2600)
             return
@@ -982,9 +1029,7 @@ class AnswerWindow(QWidget):
             adopted = self._engine.load_session(
                 session_from_article(article, msgs))
         self._set_readonly(not adopted)
-        self.show()
-        self.raise_()
-        self.activateWindow()
+        self.show_fade()
         LOG.info("history loaded id=%s msgs=%d fav=%s adopted=%s",
                  self._current_article_id, len(msgs), self._current_fav,
                  adopted)
@@ -1028,6 +1073,6 @@ class AnswerWindow(QWidget):
             if getattr(self, "_pop", None) is not None and self._pop.isVisible():
                 self._pop.setVisible(False)  # 先关会话列表，再关才是藏窗口
                 return
-            self.hide()
+            self.hide_fade()
         else:
             super().keyPressEvent(ev)

@@ -209,3 +209,37 @@ def test_followup_label_above_user_bubble_in_history_html():
     ]})
     assert html.count(">追问<") == 1           # 截屏补充（answer）不带标
     assert html.index("追问") < html.index("再讲讲")
+
+
+# ---------- 🚫 中止按钮（反馈：只有发送没有禁用按钮） ----------
+
+def test_cancel_button_emits_signal(qapp):
+    pane = _pane(qapp)
+    assert pane.cancel_btn.text() == "🚫"    # 按钮在行内（不只是信号存在）
+    got: list = []
+    pane.cancelRequested.connect(lambda: got.append(True))
+    pane._emit_cancel()
+    assert got == [True]
+
+
+# ---------- 删除会话连带删题图（2026-10-03 反馈） ----------
+
+def test_purge_deletes_storage_photo_and_spares_foreign_paths(tmp_path):
+    from spore_client.records import purge_article_files
+
+    store = tmp_path / "store"
+    store.mkdir()
+    photo = store / "art-1.jpg"
+    photo.write_bytes(b"x")
+    foreign = tmp_path / "foreign.jpg"
+    foreign.write_bytes(b"y")
+
+    class _Api:
+        def storage_dir(self):
+            return str(store)
+
+    art = {"id": "art-1",
+           "messages": [{"role": "user", "imagePath": str(foreign)}]}
+    purge_article_files(art, _Api())
+    assert not photo.exists()        # 题库附件 <id>.* 已删
+    assert foreign.exists()          # 截图目录之外的路径绝不碰（防野路径）

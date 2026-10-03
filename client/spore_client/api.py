@@ -171,6 +171,15 @@ class ApiClient:
         self._storage_dir = None  # 目录换了，缓存的题库目录跟着失效
         return out
 
+    def storage_dir(self) -> str:
+        """题库目录绝对路径（GET /storage 的 path）；查不到返回空串，成功即缓存。"""
+        if self._storage_dir is None:
+            # 查失败保持 None（下次调用再试），别把失败缓存成空串
+            with suppress(ApiError, NetworkError):
+                self._storage_dir = str(
+                    (self.storage_info() or {}).get("path") or "")
+        return self._storage_dir or ""
+
     def resolve_attachment(self, raw: str) -> str:
         """题图路径 → 本机存在的绝对路径才返回，取不到返回空串。
 
@@ -185,14 +194,10 @@ class ApiClient:
             return str(p)
         if p.is_absolute():
             return ""  # 绝对路径都不存在 → 别再拼题库目录
-        if self._storage_dir is None:
-            # 查失败保持 None（下次调用再试），别把失败缓存成空串
-            with suppress(ApiError, NetworkError):
-                self._storage_dir = str(
-                    (self.storage_info() or {}).get("path") or "")
-        if not self._storage_dir:
+        base = self.storage_dir()
+        if not base:
             return ""
-        q = Path(self._storage_dir) / p
+        q = Path(base) / p
         return str(q) if q.is_file() else ""
 
     # ---------- HTTP 底座 ----------

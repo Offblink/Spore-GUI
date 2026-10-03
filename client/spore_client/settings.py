@@ -1,4 +1,7 @@
-"""设置页：MV3 options.html 的卡片结构（模型 / 磁盘镜像 / 快捷键 / 配对 / 题库目录）。
+"""设置页：MV3 options.html 的卡片结构（模型 / 快捷键 / 题库目录）。
+
+扫码配对已迁出（2026-10-03）：设置页不再有二维码/手输 token，改为主窗
+左下角昵称头像点出二维码（见 pairing.py 与 main_window._qr_popup）。
 
 卡片与字段样式照 options.html（白底、1px #e6e8f2、圆角 16、字段 label 11.5px
 muted、hint 12.5px、输入圆角 10 底 #fafbfe focus 边 #ec4899）。Qt 样式表不支持
@@ -14,11 +17,10 @@ letter-spacing / text-transform / box-shadow：字距用字号+颜色近似，
 
 from __future__ import annotations
 
-import json
 import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -30,10 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
     LineEdit,
-    PrimaryPushButton,
     PushButton,
     SpinBox,
     SwitchButton,
@@ -150,19 +150,12 @@ def _b(v, default: bool) -> bool:
     return v if isinstance(v, bool) else default
 
 
-class _LanTask(QThread):
-    ok = Signal(str)
-    failed = Signal(str)
+class _NoWheelSpinBox(SpinBox):
+    """滚轮不改数值（2026-10-03 反馈：点过输入框后焦点还在，滚动页面
+    时数字被顺手改掉）——事件 ignore 冒泡给滚动区，页面照滚。"""
 
-    def __init__(self, api: ApiClient, parent=None):
-        super().__init__(parent)
-        self.api = api
-
-    def run(self):
-        try:
-            self.ok.emit(self.api.lan_token())
-        except (ApiError, NetworkError) as e:
-            self.failed.emit(str(e))
+    def wheelEvent(self, ev):
+        ev.ignore()
 
 
 class _ProbeTask(QThread):
@@ -200,34 +193,6 @@ class _ProbeTask(QThread):
             self.done.emit(f"失败：{e}", False)
 
 
-def _qr_matrix(payload: str) -> list[list[bool]]:
-    """QR 编码走本机已装的 qrcode 库（venv --system-site-packages 可用）。"""
-    import qrcode  # noqa: PLC0415 —— 缺库时 ImportError 由 UI 兜底提示
-    qr = qrcode.QRCode(version=None, box_size=1, border=0,
-                       error_correction=qrcode.constants.ERROR_CORRECT_M)
-    qr.add_data(payload)
-    qr.make(fit=True)
-    return qr.get_matrix()
-
-
-def _payload_image(payload: str, size: int = 180):
-    from PIL import Image, ImageDraw
-    m = _qr_matrix(payload)
-    n = len(m)
-    scale = max(1, size // (n + 2))
-    px = (n + 2) * scale
-    img = Image.new("RGB", (px, px), "white")
-    d = ImageDraw.Draw(img)
-    for y in range(n):
-        for x in range(n):
-            if m[y][x]:
-                d.rectangle([x * scale + scale, y * scale + scale,
-                             (x + 1) * scale + scale - 1,
-                             (y + 1) * scale + scale - 1], fill="black")
-    qimg = QImage(img.tobytes(), px, px, px * 3, QImage.Format_RGB888)
-    return QPixmap.fromImage(qimg)
-
-
 class SettingsPane(QWidget):
     def __init__(self, api: ApiClient, llm: LlmSettings, parent=None):
         super().__init__(parent)
@@ -236,7 +201,6 @@ class SettingsPane(QWidget):
         self.llm = llm
         self._ready = False                # 回填门闩：回填期间的事件不许触发保存
         self._probe_task: _ProbeTask | None = None
-        self._lan_task: _LanTask | None = None
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -289,7 +253,7 @@ class SettingsPane(QWidget):
 
         lay.addWidget(field_label(
             "检索轮数上限（自动核实阶段用；0 = 不自动核实，追问仍可查 1 轮）"))
-        self.rounds_spin = SpinBox()
+        self.rounds_spin = _NoWheelSpinBox()
         self.rounds_spin.setObjectName("roundsSpin")
         self.rounds_spin.setRange(0, 10)          # MV3 options.js:43
         self.rounds_spin.valueChanged.connect(
@@ -327,7 +291,7 @@ class SettingsPane(QWidget):
         lay.addLayout(row)
 
         lay.addWidget(field_label("上下文保留条数"))
-        self.history_spin = SpinBox()
+        self.history_spin = _NoWheelSpinBox()
         self.history_spin.setObjectName("historySpin")
         self.history_spin.setRange(2, 50)         # MV3 options.js:45
         self.history_spin.valueChanged.connect(
@@ -365,35 +329,7 @@ class SettingsPane(QWidget):
             "全局热键随进程常驻；关窗收进托盘后仍可用，托盘右键退出才注销。"))
         stack.addWidget(card)
 
-        # ================= 卡四：手机扫码配对（原实现原样保留） =================
-        card, lay, title = build_card(
-            "手机扫码配对",
-            "载荷 = {\"v\":1,\"api\":...,\"token\":...}；手机存 token 后先验 /users/me "
-            "再放行同步（02 认证节拍板）。")
-        self.cards["pair"] = title
-        row = QHBoxLayout()
-        self.qr_label = QLabel("加载中…")
-        self.qr_label.setFixedSize(180, 180)
-        self.qr_label.setAlignment(Qt.AlignCenter)
-        self.qr_label.setStyleSheet("border: 1px solid #ddd; background: #fff;")
-        side = QVBoxLayout()
-        self.token_edit = LineEdit()
-        self.token_edit.setObjectName("tokenEdit")
-        self.token_edit.setPlaceholderText("LAN token（手机手输兜底）")
-        self.token_edit.setReadOnly(True)
-        self.token_edit.setStyleSheet(INPUT_STYLE)
-        self.gen_btn = PrimaryPushButton("生成二维码")
-        self.gen_btn.clicked.connect(self._gen_qr)
-        side.addWidget(BodyLabel("token（只读）："))
-        side.addWidget(self.token_edit)
-        side.addWidget(self.gen_btn)
-        side.addStretch(1)
-        row.addWidget(self.qr_label)
-        row.addLayout(side, 1)
-        lay.addLayout(row)
-        stack.addWidget(card)
-
-        # ================= 卡五：题库目录（原实现原样保留） =================
+        # ================= 卡四：题库目录 =================
         card, lay, title = build_card("题库目录")
         self.cards["dir"] = title
         dir_row = QHBoxLayout()
@@ -490,28 +426,6 @@ class SettingsPane(QWidget):
                 msg, "#0f9d58" if ok else "#d02747"))
         self._probe_task.start()
 
-    # ---------- 配对 ----------
-    def _gen_qr(self):
-        self.status.setText("取 token…")
-        self._lan_task = _LanTask(self.api, self)
-        self._lan_task.ok.connect(self._on_token)
-        self._lan_task.failed.connect(
-            lambda m: self.status.setText(f"取 token 失败：{m}"))
-        self._lan_task.start()
-
-    def _on_token(self, token: str):
-        self.token_edit.setText(token)
-        payload = json.dumps({
-            "v": 1,
-            "api": self.api.base,          # 手机直连本机 REST
-            "token": token,
-        }, ensure_ascii=False)
-        try:
-            self.qr_label.setPixmap(_payload_image(payload))
-            self.status.setText("二维码已生成（10 分钟内扫；token 常驻不过期）")
-        except ImportError:
-            self.status.setText("缺 qrcode 库，用下面的 token 手输")
-
     # ---------- 目录 ----------
     def _switch_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择题库目录")
@@ -525,9 +439,11 @@ class SettingsPane(QWidget):
         try:
             info = self.api.switch_storage(d)
             data = info if isinstance(info, dict) else {}
-            self.dir_edit.setText(str(data.get("dir", d)))
+            # 后端 StorageServiceImpl.info/switchTo 的键是 path/fileCount/bytes
+            self.dir_edit.setText(str(data.get("path", d)))
             self.dir_info.setText(
-                f"{data.get('files', '?')} 个文件 · {data.get('bytes', '?')} 字节")
+                f"{data.get('fileCount', '?')} 个文件 ·"
+                f" {data.get('bytes', '?')} 字节")
             self.status.setText("题库目录已切换")
         except (ApiError, NetworkError) as e:
             self.status.setText(f"切换失败：{e}")
@@ -536,8 +452,10 @@ class SettingsPane(QWidget):
         """进入本页时拉一次目录现状（构造期不发网络请求）。"""
         try:
             info = self.api.storage_info()
-            self.dir_edit.setText(str(info.get("dir", "")))
+            # 旧代码读 dir/files 两个不存在的键 → 输入框恒空、统计恒 ?（反馈）
+            self.dir_edit.setText(str(info.get("path", "")))
             self.dir_info.setText(
-                f"{info.get('files', '?')} 个文件 · {info.get('bytes', '?')} 字节")
+                f"{info.get('fileCount', '?')} 个文件 ·"
+                f" {info.get('bytes', '?')} 字节")
         except (ApiError, NetworkError):
             self.status.setText("读取题库目录失败（后端未启动？）")

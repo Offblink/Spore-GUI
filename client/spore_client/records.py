@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
+from pathlib import Path
 
 import markdown
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, QUrl, Signal
@@ -605,6 +607,37 @@ def article_shot(article: dict, api: ApiClient) -> str:
     return ""
 
 
+def purge_article_files(article: dict, api: ApiClient) -> None:
+    """删除会话后连带删题图（2026-10-03 反馈）。
+
+    删两类：题库目录里的附件 `<id>.*`（push-attachment 的落盘名）+ 本机
+    captures 里的原图（消息 imagePath 绝对路径）。**只碰这两个安全目录**，
+    消息里的野路径一律不动；同机部署（默认）即删即净。
+    """
+    art_id = str(article.get("id") or "")
+    if not art_id:
+        return
+    base = api.storage_dir()
+    if base:
+        for f in Path(base).glob(f"{art_id}.*"):
+            with suppress(OSError):
+                f.unlink()
+    from .capture import CAPTURE_DIR  # 惰性 import：PIL 只在删除时才拉
+    cap = Path(CAPTURE_DIR).resolve()
+    for m in msgs_of(article):
+        if not isinstance(m, dict):
+            continue
+        p = Path(str(m.get("imagePath") or ""))
+        if not p.is_absolute():
+            continue  # 相对路径 = 题库目录，上面已按 id 删过
+        try:
+            p.resolve().relative_to(cap)
+        except ValueError:
+            continue  # 不在截图目录 → 不碰（防野路径）
+        with suppress(OSError):
+            p.unlink(missing_ok=True)
+
+
 class _ClickableLabel(QLabel):
     """可点 QLabel：截图点击 → 系统默认程序打开（不做自绘放大层）。"""
 
@@ -651,6 +684,7 @@ class _ElidedLabel(QLabel):
 # ---------------------------------------------------------------- 主页面
 class RecordsPane(QWidget):
     followupRequested = Signal(str, str)   # art_id, 追问原文 → 主窗收编+代发
+    cancelRequested = Signal()             # 🚫 停止当前回合 → 主窗 engine.cancel
 
     def __init__(self, api: ApiClient, parent=None):
         super().__init__(parent)
@@ -802,10 +836,20 @@ class RecordsPane(QWidget):
         self.followup_send.setToolTip("发送")
         foot.addWidget(self.followup_input, 1)
         foot.addWidget(self.followup_send)
+        # 🚫 中止（2026-10-03 反馈：只有发送没有禁用按钮）——与面板 🚫 同语义
+        self.cancel_btn = QPushButton("🚫")
+        self.cancel_btn.setFixedSize(40, 40)
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setToolTip("停止本回合")
+        self.cancel_btn.setStyleSheet(
+            "QPushButton{background:transparent; border:none; font-size:16px;"
+            " color:#a3a8c2; border-radius:10px;}"
+            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        foot.addWidget(self.cancel_btn)
         dv.addLayout(foot)
         self.followup_send.clicked.connect(self._send_followup)
         self.followup_input.returnPressed.connect(self._send_followup)
-
+        self.cancel_btn.clicked.connect(self._emit_cancel)
         mv.addWidget(self.detail_box, 1)
         self.detail_box.hide()
 
@@ -818,6 +862,9 @@ class RecordsPane(QWidget):
         # 点进去可能空白、狂点刷新也不显示——开机即拉，标签页每次切入再拉
         self.load_categories()
         self.reload()
+
+    def _emit_cancel(self):
+        self.cancelRequested.emit()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -1147,6 +1194,10 @@ class RecordsPane(QWidget):
             return
         try:
             self.api.delete_article(art_id)
+            row = next((r for r in self.rows
+                        if str(r.get("id")) == art_id), None)
+            if row is not None:
+                purge_article_files(row, self.api)  # 删会话连带删题图
             self.reload()
         except (ApiError, NetworkError) as e:
             self._err(f"删除失败：{e}")
