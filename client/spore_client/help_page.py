@@ -83,7 +83,8 @@ class HelpPane(QWidget):
         card, lay, _ = build_card("手机扫码配对")
         lay.addWidget(setting_label(
             "点主界面左下角的头像，弹出二维码；手机扫一下即可接入"
-            "（二维码 10 分钟内有效）。"))
+            "（二维码 10 分钟内有效；里面带电脑的局域网 IP，"
+            "手机需与电脑同一网络）。"))
         stack.addWidget(card)
 
         # ================= 卡五：数据都在哪 =================
