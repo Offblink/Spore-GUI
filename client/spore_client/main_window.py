@@ -95,7 +95,7 @@ class MainWindow(FluentWindow):
 
         # 四页对齐左索引：搜题记录 / 日志 / 设置 / 帮助
         # （原「科目管理」页已并入搜题记录页侧栏 —— 用户 2026-10-02 拍板）
-        self.addSubInterface(self.records, FluentIcon.DOCUMENT, "搜题记录")
+        self.addSubInterface(self.records, FluentIcon.CHAT, "搜题记录")
         self.addSubInterface(self.log_page, FluentIcon.HISTORY, "日志")
         self.addSubInterface(self.settings, FluentIcon.SETTING, "设置")
         self.addSubInterface(self.help_page, FluentIcon.HELP, "帮助")
