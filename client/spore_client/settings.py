@@ -249,18 +249,14 @@ class SettingsPane(QWidget):
         lay.addWidget(self.endpoint_edit)
 
         lay.addWidget(field_label("API Key"))
-        # 输入框永不回显旧值：只在敲入期间持有新值，回车即覆盖保存
-        #（2026-10-03 拍板：key 只依赖 config，环境变量废除）
+        # 输入框永不回显旧值：只在敲入期间持有新值，回车即覆盖保存；
+        # 状态句子直接做占位符（2026-10-03 反馈：别在框下面再挂一行字）
         self.key_edit = LineEdit()
         self.key_edit.setObjectName("keyEdit")
         self.key_edit.setEchoMode(QLineEdit.Password)
         self.key_edit.setStyleSheet(INPUT_STYLE)
         self.key_edit.returnPressed.connect(self._save_key)
         lay.addWidget(self.key_edit)
-        self.key_status = QLabel()
-        self.key_status.setObjectName("apiKeyStatus")  # 状态行：已设置/未设置
-        self.key_status.setWordWrap(True)
-        lay.addWidget(self.key_status)
 
         lay.addWidget(field_label("模型名"))
         self.model_edit = LineEdit()
@@ -288,7 +284,7 @@ class SettingsPane(QWidget):
             lambda t: self._model_changed("proxy", t.strip()))
         lay.addWidget(self.proxy_edit)
         lay.addWidget(hint_label(
-            "填了 → 引擎链 ddg→bing→brave；留空 → 只走 bing"))
+            "填了 → 引擎链 DDG→BING→BRAVE；留空 → 只走 BING"))
 
         self.auto_switch = SwitchButton()
         self.auto_switch.setObjectName("autoVerifySwitch")
@@ -316,6 +312,9 @@ class SettingsPane(QWidget):
         self.history_spin.valueChanged.connect(
             lambda v: self._model_changed("history_limit", v))
         lay.addWidget(self.history_spin)
+        lay.addWidget(hint_label(
+            "发给模型的最近消息条数（对话上下文，不是会话数量）；"
+            "会话列表本身全部显示、可滚动"))
 
         row = QHBoxLayout()
         self.probe_btn = PushButton("测试连接")
@@ -407,14 +406,11 @@ class SettingsPane(QWidget):
         QTimer.singleShot(2200, self._clear_saved_hint)
 
     def _sync_key_ui(self):
+        """状态句子进占位符（2026-10-03 反馈：不再单独挂一行灰字）。"""
         if self.llm.api_key:
-            self.key_status.setText("已设置 ✓（不回显；粘贴新值回车即覆盖）")
-            self.key_status.setStyleSheet("color: #0f9d58; font-size: 12.5px;")
-            self.key_edit.setPlaceholderText("（已设置）")
+            self.key_edit.setPlaceholderText("已设置 ✓（不回显；粘贴新值回车即覆盖）")
         else:
-            self.key_status.setText("未设置 ✗（粘贴后回车保存）")
-            self.key_status.setStyleSheet("color: #d02747; font-size: 12.5px;")
-            self.key_edit.setPlaceholderText("（未设置）")
+            self.key_edit.setPlaceholderText("未设置 ✗（粘贴 API key 后回车保存）")
 
     def _collect(self) -> dict:
         return {

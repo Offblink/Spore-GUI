@@ -74,10 +74,11 @@ def test_plain_spinbox_still_reacts_to_wheel(qapp):
 def test_key_input_saves_without_echoing(qapp):
     pane = _pane(_StorageApi(), LlmSettings())      # 起点：没设过 key
     assert pane.key_edit.text() == ""                 # 永不回显旧值
-    assert pane.key_edit.placeholderText() == "（未设置）"
+    assert pane.key_edit.placeholderText() == "未设置 ✗（粘贴 API key 后回车保存）"
     pane.key_edit.setText("  sk-new  ")
     pane._save_key()
     assert pane.llm.api_key == "sk-new"               # 即改即生效
     assert pane.key_edit.text() == ""                 # 保存即清空，不回显
-    assert pane.key_edit.placeholderText() == "（已设置）"
+    # 状态句子直接做占位符（2026-10-03 反馈：并入输入框，不再单挂一行字）
+    assert pane.key_edit.placeholderText() == "已设置 ✓（不回显；粘贴新值回车即覆盖）"
     assert pane._collect()["apiKey"] == "sk-new"      # 进落盘白名单

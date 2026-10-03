@@ -44,3 +44,9 @@ def test_tray_activation_reasons_supported(main_win):
     # PySide6 6.10 无 DoubleTrigger（改名 DoubleClick）——旧码托盘点击必炸
     main_win._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
     main_win._on_tray_activated(QSystemTrayIcon.ActivationReason.DoubleClick)
+
+
+def test_help_page_registered(main_win):
+    # 2026-10-03 要求新增帮助页：挂进左索引（第四页）
+    assert main_win.help_page.objectName() == "helpPage"
+    assert main_win.stackedWidget.indexOf(main_win.help_page) >= 0

@@ -1,4 +1,4 @@
-"""主窗口：三页签 FluentWindow（搜题记录 / 日志 / 设置）。
+"""主窗口：四页签 FluentWindow（搜题记录 / 日志 / 设置 / 帮助）。
 
 页内实现见 records.py / log_page.py / settings.py（MV3 options/review 同构）；
 截屏热键 Alt+S、回答面板 Alt+Z（与 MV3 drawer.js 同键位）挂在这里。
@@ -34,6 +34,7 @@ from .answer_window import AnswerWindow
 from .api import ApiClient, ApiError, NetworkError
 from .app_icon import app_icon
 from .capture import CaptureController, HotkeyManager
+from .help_page import HelpPane
 from .log import get_logger
 from .log_page import LogPane
 from .pairing import LanTask, build_payload, initial_of, payload_image
@@ -90,12 +91,14 @@ class MainWindow(FluentWindow):
         self.records = RecordsPane(api)
         self.log_page = LogPane()
         self.settings = SettingsPane(api, self.llm_settings)
+        self.help_page = HelpPane()
 
-        # 三页对齐 MV3 options 左索引：搜题记录 / 日志 / 设置
+        # 四页对齐左索引：搜题记录 / 日志 / 设置 / 帮助
         # （原「科目管理」页已并入搜题记录页侧栏 —— 用户 2026-10-02 拍板）
         self.addSubInterface(self.records, FluentIcon.DOCUMENT, "搜题记录")
         self.addSubInterface(self.log_page, FluentIcon.HISTORY, "日志")
         self.addSubInterface(self.settings, FluentIcon.SETTING, "设置")
+        self.addSubInterface(self.help_page, FluentIcon.HELP, "帮助")
         # 每页首次切入拉一次数据（lazy，失败不阻断）
         # 实测：本 flavor 的 FluentWindow 无 tabBar，切页信号在 stackedWidget 上
         self._booted: set[str] = set()
