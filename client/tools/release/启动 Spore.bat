@@ -20,10 +20,10 @@ netstat -an | findstr ":8080" | findstr LISTENING >nul
 if not errorlevel 1 goto client
 start "Spore 后端" /min "%JAVA%" -jar spore-backend-1.0.0.jar
 
-rem ---- 等 8080 就绪（最多 60 秒）----
+rem ---- 等 8080 就绪（最多约 60 秒；ping 作睡眠，不依赖标准输入）----
 set /a n=0
 :wait
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 netstat -an | findstr ":8080" | findstr LISTENING >nul
 if not errorlevel 1 goto client
 set /a n+=1
