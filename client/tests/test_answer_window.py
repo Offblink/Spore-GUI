@@ -296,3 +296,66 @@ def test_chat_start_puts_followup_label_above_user_bubble(qapp):
     user_texts = [b["user_lbl"].text() for b in win._blocks
                   if b["kind"] == "user" and b["user_lbl"] is not None]
     assert "在吗" in user_texts
+
+
+# ---------- P4：拖图 toast 详情过长显示不全（2026-10-05 用户反馈） ----------
+
+def test_drop_toast_is_short_on_success_and_error(qapp, monkeypatch):
+    """InfoBar 单行截断：成功分支只给 host、错误分支把超长异常串截短。"""
+    import spore_client.answer_window as aw
+
+    class _Sig:
+        def __init__(self):
+            self._cb = None
+
+        def connect(self, cb):
+            self._cb = cb
+
+        def emit(self, v):
+            if self._cb is not None:
+                self._cb(v)
+
+    class _StubTask:                    # 不发网络：start() 空转，信号手工点
+        def __init__(self, url, parent=None):
+            self.ok = _Sig()
+            self.failed = _Sig()
+
+        def start(self):
+            pass
+
+    seen: list[tuple[str, str, str]] = []
+
+    class _InfoBar:
+        @staticmethod
+        def success(title, content, **kw):
+            seen.append(("ok", title, content))
+
+        @staticmethod
+        def warning(title, content, **kw):
+            seen.append(("bad", title, content))
+
+    monkeypatch.setattr(aw, "_FetchImageTask", _StubTask)
+    monkeypatch.setattr(aw, "InfoBar", _InfoBar)
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+
+    long_url = ("https://images.example-cdn.com/spore/2026/10/05/"
+                + "x" * 160 + ".png")
+    win._fetch_dropped(long_url)
+    kind, title, content = seen[-1]
+    assert (kind, title) == ("ok", "正在读取图片")
+    assert long_url not in content        # 详情不再塞整条 URL
+    assert "/" not in content             # 只剩 host
+    assert content == "images.example-cdn.com"
+    assert len(content) <= 40
+
+    win._fetch_dropped("not-a-url")       # 坏 URL 不抛，详情仍短
+    assert seen[-1][0] == "ok"
+    assert len(seen[-1][2]) <= 40
+
+    win._fetch_dropped(long_url)
+    win._img_task.failed.emit("boom " + "x" * 180)   # 异常串超长
+    kind, title, content = seen[-1]
+    assert (kind, title) == ("bad", "读取图片失败")
+    assert len(content) <= 41
+    assert content.endswith("…")
+    assert "boom" in content

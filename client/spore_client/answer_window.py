@@ -65,6 +65,7 @@ from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .capture import CAPTURE_DIR, encode_jpeg
+from .latex_render import extract_math, restore_math
 from .log import get_logger
 from .records import UNREAD, _InputDialog, article_shot, purge_article_files
 from .settings_store import read as read_ui_settings
@@ -111,12 +112,15 @@ def _star_style(fav: bool, size: int = 14) -> str:
 
 
 def _md_html(text: str) -> str:
-    # math 扩展在 markdown≥3.6 已移除（装的是3.9，引用即每次渲染必抛）；
-    # MV3 md.js 同样不渲染 LaTeX → 去掉保持两端语义一致。
+    # LaTeX 公式在 markdown 转义**之前**抽出（否则公式里的 * _ 会被吃掉），
+    # 渲成 PNG data URI 内联图（Qt 富文本不吃 MathML，见 latex_render 注释）；
+    # 渲染失败原样显示源码。markdown≥3.6 移除的 math 扩展不用装、也不需要。
     # `<<` 先转义：协议标记（<<ok>>）会被富文本当标签吃掉，「ok」消失（2026-10-03）
-    return markdown.markdown(
-        str(text or "").replace("<<", "&lt;&lt;"),
+    holed, formulas = extract_math(str(text or ""))
+    out = markdown.markdown(
+        holed.replace("<<", "&lt;&lt;"),
         extensions=["fenced_code", "tables", "nl2br"])
+    return restore_math(out, formulas)
 
 
 def _md_div(text: str, color: str, size: int) -> str:
@@ -182,6 +186,19 @@ def _sec_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setStyleSheet("QLabel{color:#9aa0bb; font-size:11.5px; font-weight:600;}")
     return lab
+
+
+def _url_host(url: str) -> str:
+    """toast 详情只显示 host（P4：完整 URL 塞进 InfoBar 单行截断显示不全）。
+    坏 URL（没分段/空串）不抛，返回空串。"""
+    parts = str(url or "").split("/")
+    return parts[2] if len(parts) > 2 else ""
+
+
+def _toast_snip(text: str, limit: int = 40) -> str:
+    """toast 详情压成一行、超长省略（InfoBar 单行；异常串可到 200 字）。"""
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[:limit] + "…"
 
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -554,11 +571,11 @@ class AnswerWindow(QWidget):
 
     def _fetch_dropped(self, url: str):
         LOG.info("panel drop image url=%s", url)
-        self._toast(True, "正在读取图片", url[:80], 2200)
+        self._toast(True, "正在读取图片", _toast_snip(_url_host(url)), 2200)
         self._img_task = _FetchImageTask(url, self)
         self._img_task.ok.connect(self._on_dropped_image)
         self._img_task.failed.connect(
-            lambda m: self._toast(False, "读取图片失败", m, 3200))
+            lambda m: self._toast(False, "读取图片失败", _toast_snip(m), 3200))
         self._img_task.start()
 
     def _on_dropped_image(self, path: str):

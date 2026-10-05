@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -87,6 +87,7 @@ class MainWindow(FluentWindow):
         self.llm_settings = apply_to_llm(load_from_env())
         self._delta_counts: dict[str, int] = {}
         self._t_turn = time.monotonic()  # 回合计时，_on_captured 时重置
+        self._placeholders: dict[str, str] = {}  # sess.id → 开局占位行 id（P3）
 
         self.records = RecordsPane(api)
         self.log_page = LogPane()
@@ -301,7 +302,14 @@ class MainWindow(FluentWindow):
             self._notify("error", "无法作答",
                          "缺少 LLM key，截图已存盘：" + path, 6000)
             return
+        prev = self.engine.session
         self.answer_window.new_turn(path, sel=sel)
+        sess = self.engine.session
+        if sess is not prev and not sess.backend_id:
+            # P3：先落一条 status=answering 的占位行，会话当即进记录列表；
+            # turn-end 走 PUT 换成完整正文（§8-2 同链）。排在 turn-end 信号
+            # 之前入队；极快失败的竞态由 _placeholder_sync 的终态守卫兜住。
+            QTimer.singleShot(0, lambda: self._placeholder_sync(sess))
 
     def _followup(self, text: str):
         if not self.engine.send_followup(text):
@@ -367,19 +375,27 @@ class MainWindow(FluentWindow):
             LOG.info("turn-end in %.1fs deltas=%s",
                      time.monotonic() - self._t_turn, self._delta_counts)
             self._delta_counts = {}
-            if not ev.get("error") and not ev.get("aborted"):
+            if ev.get("error") or ev.get("aborted"):
+                # 中止/出错维持既有语义（不落库）——占位行必须收掉，
+                # 否则列表留一条永远「回答中」的僵尸；没占过位则为 no-op
+                self._drop_placeholder(sess)
+            else:
                 self._persist_turn(sess)
 
     def _persist_turn(self, sess):
         """回合结束落库：新回合 POST /articles，接续历史 PUT /articles/{id}。
 
         sess 是**事件那场**的会话（并行回合后不再等于 engine.session）。
+        开局占过位（P3）的回合 backend_id 已回写 → 自然走 PUT 分支。
         """
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._persist_turn_sync(sess))
 
     def _persist_turn_sync(self, sess):
+        ph = self._placeholders.pop(sess.id, None)  # 本回合开局占位（P3），此刻收编
         if not any(m.role == "assistant" for m in sess.messages):
+            if ph:
+                # 正文没落成（无回答）→ 按中止语义收掉占位行
+                self._drop_placeholder(sess, ph)
             return
         t0 = time.monotonic()
         try:
@@ -387,11 +403,13 @@ class MainWindow(FluentWindow):
             put = bool(sess.backend_id)
             if sess.backend_id:
                 # 历史接续回合：后端 ArticleReq.messages 非 null 即重写正文（§8-2）；
-                # 接续会话不带新题图，题图只在新回合 POST 后上推
+                # 接续会话不带新题图——占位回合（ph）的题图在这是首推点
                 art = self.api.update_article(
                     sess.backend_id, title=sess.title,
                     status=sess.status or "done", messages=messages)
                 art_id = sess.backend_id
+                if ph and sess.image_path:
+                    self.api.push_attachment(art_id, sess.image_path)
             else:
                 art = self.api.create_article({
                     "title": sess.title,
@@ -419,6 +437,56 @@ class MainWindow(FluentWindow):
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
             self._notify("warning", "落库失败", str(e), 5000)
+
+    def _placeholder_sync(self, sess):
+        """P3：截图回合开局先落占位行（status=answering、messages 空）——
+        会话当即进记录列表；turn-end 用 PUT 换成完整正文（backend_id 已回写，
+        fa5b379 的回写链不动）。占位失败只记日志：turn-end 的 POST 分支兜底。"""
+        if sess.backend_id or sess.status in ("done", "aborted", "error"):
+            return  # 已有行 / 回合已收尾（极快失败竞态）——不制造没人收尾的占位
+        t0 = time.monotonic()
+        try:
+            art = self.api.create_article({
+                "title": sess.title,
+                "status": "answering",
+                "messages": [],
+            })
+            art_id = str(art.get("id") or "") if isinstance(art, dict) else ""
+            if not art_id:
+                return
+            sess.backend_id = art_id
+            self._placeholders[sess.id] = art_id
+            if self.engine.session is sess:
+                # 面板 ★ 提前拿到收藏对象（turn-end 会按落库结果再刷一次）
+                self.answer_window.set_current_article(
+                    art_id, bool(art.get("fav")))
+            LOG.info("placeholder persisted id=%s in %.0fms", art_id,
+                     (time.monotonic() - t0) * 1000)
+            self.records.reload()  # 列表当即看到这条会话
+        except Exception as e:  # noqa: BLE001 —— 占位失败不掀桌，兜底在 turn-end
+            LOG.error("placeholder persist failed in %.0fms: %s",
+                      (time.monotonic() - t0) * 1000, e)
+
+    def _drop_placeholder(self, sess, art_id: str | None = None):
+        """收掉开局占位行：中止/出错不落库（既有语义）→ DELETE；
+        删除失败降级改终态 + 正文，绝不留永远「回答中」的僵尸行。"""
+        art_id = (art_id if art_id is not None
+                  else self._placeholders.pop(sess.id, None))
+        if not art_id:
+            return
+        try:
+            self.api.delete_article(art_id)
+            sess.backend_id = ""
+            LOG.info("placeholder dropped id=%s", art_id)
+        except Exception as e:  # noqa: BLE001
+            LOG.error("drop placeholder failed id=%s: %s", art_id, e)
+            try:
+                self.api.update_article(
+                    art_id, status=sess.status or "aborted",
+                    messages=[m.to_dict() for m in sess.messages])
+            except Exception as e2:  # noqa: BLE001
+                LOG.error("placeholder resolve failed id=%s: %s", art_id, e2)
+        self.records.reload()
 
     def _unread_account(self, sess, art_id: str):
         """后台完成的会话点未读红点（MV3 unread 同语义）：

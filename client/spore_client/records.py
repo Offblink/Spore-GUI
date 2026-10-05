@@ -82,6 +82,7 @@ from qfluentwidgets import (
 
 from .answer.session import Session, msgs_of
 from .api import ApiClient, ApiError, NetworkError
+from .latex_render import extract_math, restore_math
 
 FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
 
@@ -91,6 +92,11 @@ FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端�
 UNREAD: set[str] = set()
 ACCENT = "#ec4899"
 
+# 涂抹贴近视口边缘时自动滚动会话树（2026-10-05 用户点名，P1）
+PAINT_SCROLL_BAND = 56    # 边缘带宽：笔尖距视口上/下缘多少 px 内持续滚
+PAINT_SCROLL_STEP = 14    # 每 tick 步长（px）
+PAINT_SCROLL_MS = 30      # tick 间隔
+
 STATUS_LABEL = {
     "done": "完成", "error": "出错", "aborted": "已停止",
     "answering": "作答中", "verifying": "核实中",
@@ -98,11 +104,15 @@ STATUS_LABEL = {
 
 
 def _md(text: str) -> str:
-    # 不加 math 扩展：markdown≥3.6 已移除，引用即每次渲染必抛。
+    # LaTeX 公式在 markdown 转义**之前**抽出（否则公式里的 * _ 会被吃掉），
+    # 渲成 PNG data URI 内联图（Qt 富文本不吃 MathML，见 latex_render 注释）；
+    # 渲染失败原样显示源码。markdown≥3.6 移除的 math 扩展不用装、也不需要。
     # `<<` 先转义：模型协议标记（<<ok>> 等）会被富文本当标签吃掉，
     # 「ok」直接消失（2026-10-03 用户截图实锤）
-    return markdown.markdown(str(text or "").replace("<<", "&lt;&lt;"),
-                             extensions=["fenced_code", "tables", "nl2br"])
+    holed, formulas = extract_math(str(text or ""))
+    out = markdown.markdown(holed.replace("<<", "&lt;&lt;"),
+                            extensions=["fenced_code", "tables", "nl2br"])
+    return restore_math(out, formulas)
 
 
 def _md_inline(text: str) -> str:
@@ -809,6 +819,11 @@ class RecordsPane(QWidget):
         self._multi: set[str] = set()    # 勾选的会话 id
         self._paint = None               # 本笔涂抹 {card,seg,prev,dx,dir,moved}
         self._press_card: SessionCard | None = None
+        self._paint_gpos = None          # 最近一次笔尖全局坐标（自动滚动重命中用）
+        self._scroll_dir = 0             # 边缘分档：-1 上滚 / 0 停 / +1 下滚
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(PAINT_SCROLL_MS)
+        self._scroll_timer.timeout.connect(self._auto_scroll_tick)
         self._shot_path = ""
         self._shot_pm = QPixmap()
         self._cat_task: _CatTask | None = None
@@ -895,6 +910,7 @@ class RecordsPane(QWidget):
         self._tree_box.setSpacing(2)
         self._tree_box.addStretch(1)
         tree_scroll.setWidget(self._tree_widget)
+        self._tree_scroll = tree_scroll   # 涂抹自动滚动要滚它（P1）
         sv.addWidget(tree_scroll, 1)
 
         # ---- 多选底栏（mobile #batchbar 同款；只在多选模式露出） ----
@@ -1479,6 +1495,13 @@ class RecordsPane(QWidget):
         return None
 
     def _paint_move(self, gpos):
+        if self._paint is None:
+            return
+        self._paint_gpos = gpos
+        self._update_auto_scroll(gpos)   # 先分档：笔尖出命中区也要能滚（P1）
+        self._paint_hit(gpos)
+
+    def _paint_hit(self, gpos):
         p = self._paint
         if p is None:
             return
@@ -1497,6 +1520,48 @@ class RecordsPane(QWidget):
         p["moved"] = True
         self._paint_range(idx)
 
+    def _update_auto_scroll(self, gpos):
+        """笔尖距视口上/下缘分档 → QTimer 连续滚；离开边缘档即停（P1）。
+        视口矩形必须 mapToGlobal：frameGeometry() 是父坐标（§5.1 铁律），
+        拿它跟笔尖 globalPosition 比会整体错位。"""
+        if self._paint is None:
+            self._stop_auto_scroll()
+            return
+        vp = self._tree_scroll.viewport()
+        rect = QRect(vp.mapToGlobal(QPoint(0, 0)), vp.size())
+        y = gpos.y()
+        if y < rect.top() + PAINT_SCROLL_BAND:
+            d = -1
+        elif y > rect.bottom() + 1 - PAINT_SCROLL_BAND:
+            d = 1
+        else:
+            d = 0
+        self._scroll_dir = d
+        if d and not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+        elif not d and self._scroll_timer.isActive():
+            self._scroll_timer.stop()
+
+    def _auto_scroll_tick(self):
+        if self._paint is None or not self._scroll_dir:
+            self._stop_auto_scroll()
+            return
+        sb = self._tree_scroll.verticalScrollBar()
+        want = max(sb.minimum(), min(sb.maximum(),
+                                     sb.value() + self._scroll_dir * PAINT_SCROLL_STEP))
+        if want == sb.value():
+            self._stop_auto_scroll()      # 滚到头：没得滚就停（移回档内会重启）
+            return
+        sb.setValue(want)
+        if self._paint_gpos is not None:
+            # 滚动后行位移：按笔尖原位重新命中，新经过的行纳入本笔
+            self._paint_hit(self._paint_gpos)
+
+    def _stop_auto_scroll(self):
+        self._scroll_dir = 0
+        if self._scroll_timer.isActive():
+            self._scroll_timer.stop()
+
     def _paint_range(self, to_idx):
         p = self._paint
         a, b = sorted((p["seg"], to_idx))
@@ -1506,6 +1571,8 @@ class RecordsPane(QWidget):
 
     def _paint_end(self):
         p, self._paint = self._paint, None
+        self._stop_auto_scroll()          # 收笔必停（P1）
+        self._paint_gpos = None
         if p is None:
             return
         p["card"].releaseMouse()
@@ -1524,6 +1591,7 @@ class RecordsPane(QWidget):
         self._selecting = bool(on)
         if not self._selecting:
             self._multi.clear()
+            self._stop_auto_scroll()      # 取消多选：滚动必停（P1）
         self._batch_bar.setVisible(self._selecting)
         self.sel_btn.setText("退出选择" if self._selecting else "批量选择")
         for card in self._session_cards:

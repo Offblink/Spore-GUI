@@ -23,7 +23,7 @@ jobs:
         run: >-
           python -m pip install
           "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3"
-          httpx markdown qrcode Pillow keyboard pytest ruff
+          httpx markdown qrcode Pillow keyboard pytest ruff matplotlib
 
       # pyproject 已配 ruff 规则集（E/F/I/UP/B/SIM）——进 CI 当门禁
       - name: Lint (ruff)

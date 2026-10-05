@@ -276,21 +276,21 @@ def test_purge_deletes_storage_photo_and_spares_foreign_paths(tmp_path):
 
 # ---------- 涂抹多选（2026-10-05 照 mobile record.js：长按进 / 单选框涂抹 / 批量） ----------
 
-def _multi_pane(qapp) -> RecordsPane:
-    """5 条会话 + 真 show（涂抹按全局几何命中行，offscreen 也要有布局）。"""
+def _multi_pane(qapp, rows: int = 5, size: tuple[int, int] = (1000, 800)) -> RecordsPane:
+    """N 条会话 + 真 show（涂抹按全局几何命中行，offscreen 也要有布局）。"""
     pane = _pane(qapp)
     pane.rows = [
         {"id": f"s{i}", "title": f"会话{i}", "fav": 0, "categoryId": "",
          "updateTime": "2026-10-05 10:00:00", "status": "done",
          "messages": []}
-        for i in range(5)
+        for i in range(rows)
     ]
     pane._render_tree()
-    pane.resize(1000, 800)
+    pane.resize(*size)
     pane.show()
     for _ in range(3):
         qapp.processEvents()
-    assert len(pane._session_cards) == 5
+    assert len(pane._session_cards) == rows
     return pane
 
 
@@ -426,3 +426,52 @@ def test_unread_dot_marks_and_clears(qapp):
     finally:
         UNREAD.discard("s2")
         UNREAD.discard("s3")
+
+
+# ---------- P1：涂抹贴近视口上下缘自动滚动会话树（2026-10-05 用户点名） ----------
+
+def test_paint_auto_scroll_follows_viewport_edges(qapp):
+    from spore_client.records import PAINT_SCROLL_BAND
+
+    pane = _multi_pane(qapp, rows=60, size=(1000, 640))   # 60 行 → 内容溢出
+    pane._set_selecting(True)
+    for _ in range(3):
+        qapp.processEvents()               # 底栏露出后布局才落定
+    vp = pane._tree_scroll.viewport()
+    sb = pane._tree_scroll.verticalScrollBar()
+    assert sb.maximum() > 0 and sb.value() == 0
+    assert vp.height() > 2 * PAINT_SCROLL_BAND + 40   # 中部要留得出非边缘档
+
+    c0 = pane._session_cards[0]
+    ck = c0.ck.pos() + QPoint(8, 8)         # 单选框起笔（真全局由 Qt 映射）
+    QTest.mousePress(c0, Qt.LeftButton, pos=ck)
+    assert pane._paint is not None
+
+    def move_to(g):                         # 取点一律 mapToGlobal 真全局（§5.1）
+        QTest.mouseMove(c0, c0.mapFromGlobal(g))
+
+    # 1) 笔尖进视口下缘带 → 向下连续滚
+    move_to(vp.mapToGlobal(QPoint(0, vp.height() - 8)))
+    QTest.qWait(250)
+    assert sb.value() > 0
+
+    # 2) 回到中部（非边缘档）→ 立即停，数值定住
+    move_to(vp.mapToGlobal(QPoint(0, vp.height() // 2)))
+    QTest.qWait(80)
+    assert not pane._scroll_timer.isActive()
+    mid = sb.value()
+    QTest.qWait(200)
+    assert sb.value() == mid
+
+    # 3) 笔尖进视口上缘带 → 向上滚
+    move_to(vp.mapToGlobal(QPoint(0, 8)))
+    QTest.qWait(250)
+    assert sb.value() < mid
+
+    # 4) 收笔 → 滚动必停、数值定格
+    QTest.mouseRelease(c0, Qt.LeftButton, pos=ck)
+    assert pane._paint is None
+    assert not pane._scroll_timer.isActive()
+    final = sb.value()
+    QTest.qWait(200)
+    assert sb.value() == final

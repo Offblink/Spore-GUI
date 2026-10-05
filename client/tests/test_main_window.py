@@ -82,3 +82,82 @@ def test_persist_turn_writes_backend_id_so_next_turn_puts(main_win, monkeypatch)
         t = main_win.records._task
         if t is not None:
             t.wait(3000)                           # reload 线程收尾
+
+
+def test_placeholder_lands_row_then_end_puts(main_win, monkeypatch):
+    """P3 回归：截图回合开局先 POST 占位行（status=answering、messages 空）——
+    会话当即进记录列表；turn-end 走 PUT 换完整正文，绝不二次开新会话；
+    占位回合的题图挪到 turn-end 首推（fa5b379 的 backend_id 回写链不动）。"""
+    from spore_client.answer.session import Msg, Session
+    from spore_client.records import UNREAD
+
+    sess = Session(title="截图回合", image_path="C:/x/shot.png")
+    sess.messages.append(Msg(role="user", kind="answer", text="", hasImage=True))
+    sess.messages.append(Msg(role="assistant", kind="answer", ans="A"))
+    posts: list = []
+    puts: list = []
+    pushes: list = []
+    reloads: list = []
+    monkeypatch.setattr(main_win.api, "create_article",
+                        lambda body: posts.append(body) or {"id": "art-P3",
+                                                            "fav": 0})
+    monkeypatch.setattr(main_win.api, "update_article",
+                        lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
+    monkeypatch.setattr(main_win.api, "push_attachment",
+                        lambda aid, p: pushes.append((aid, p)))
+    monkeypatch.setattr(main_win.records, "reload",
+                        lambda: reloads.append(1))
+    try:
+        main_win._placeholder_sync(sess)           # 开局占位
+        assert posts[0]["status"] == "answering"
+        assert posts[0]["messages"] == []          # 占位行不带正文
+        assert sess.backend_id == "art-P3"         # 回写：turn-end 才能走 PUT
+        assert main_win._placeholders[sess.id] == "art-P3"
+        assert reloads                             # 列表当即刷新（P3 的核心诉求）
+
+        main_win._persist_turn_sync(sess)          # turn-end 收编
+        assert len(posts) == 1                     # 绝不再开第二条会话
+        assert puts and puts[0][0] == "art-P3"
+        assert puts[0][1]["messages"]              # 完整正文 PUT 进去
+        assert pushes == [("art-P3", "C:/x/shot.png")]  # 题图 turn-end 首推
+        assert sess.id not in main_win._placeholders
+    finally:
+        UNREAD.discard("art-P3")
+
+
+def test_aborted_turn_drops_placeholder_row(main_win, monkeypatch):
+    """P3：占位后回合中止/出错 → 维持既有语义（不落库），DELETE 占位行——
+    列表绝不留一条永远「回答中」的僵尸。走 _engine_event 真路由。"""
+    from spore_client.answer.session import Session
+
+    sess = Session(title="中止回合")
+    sess.backend_id = "art-Z"
+    main_win._placeholders[sess.id] = "art-Z"
+    deletes: list = []
+    monkeypatch.setattr(main_win.api, "delete_article",
+                        lambda aid: deletes.append(aid))
+    monkeypatch.setattr(main_win.records, "reload", lambda: None)
+    monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: sess)
+    try:
+        main_win._engine_event(
+            {"type": "turn-end", "sid": sess.id, "aborted": True})
+        assert deletes == ["art-Z"]
+        assert sess.backend_id == ""
+        assert sess.id not in main_win._placeholders
+    finally:
+        main_win._placeholders.pop(sess.id, None)
+
+
+def test_placeholder_never_created_after_turn_finished(main_win, monkeypatch):
+    """极快失败竞态：回合已收尾才轮到占位任务执行 → 终态守卫跳过，
+    不制造没人收尾的占位行（否则 turn-end 已过、没人会 DELETE 它）。"""
+    from spore_client.answer.session import Session
+
+    sess = Session()
+    sess.status = "done"
+    posts: list = []
+    monkeypatch.setattr(main_win.api, "create_article",
+                        lambda body: posts.append(body) or {"id": "x"})
+    main_win._placeholder_sync(sess)
+    assert posts == []
+    assert sess.backend_id == ""
