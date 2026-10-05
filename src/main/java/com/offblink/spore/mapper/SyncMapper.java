@@ -25,4 +25,14 @@ public interface SyncMapper {
     List<Article> selectArticlesSince(@Param("userId") Long userId,
                                       @Param("since") LocalDateTime since,
                                       @Param("limit") int limit);
+
+    /**
+     * 按 id 取文章（**含墓碑**）：push 合并必须看得见 deleted=1 的行——
+     * MP selectById 带逻辑删除过滤，查不到墓碑行会走 INSERT 撞主键
+     * （实测 DuplicateKeyException → 500 → 整轮 push 回滚）。
+     */
+    Article selectByIdAny(@Param("id") String id);
+
+    /** 按 id 取科目（含墓碑）：科目侧对称，同一坑 */
+    Category selectCategoryByIdAny(@Param("id") String id);
 }

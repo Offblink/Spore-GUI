@@ -140,7 +140,7 @@ public class SyncServiceImpl implements SyncService {
         if (item.getId() == null || item.getId().trim().isEmpty()) {
             return false;
         }
-        Category local = categoryMapper.selectById(item.getId());
+        Category local = syncMapper.selectCategoryByIdAny(item.getId());
         if (local == null) {
             Category c = new Category();
             c.setId(item.getId());
@@ -182,7 +182,8 @@ public class SyncServiceImpl implements SyncService {
         if (item.getId() == null || item.getId().trim().isEmpty()) {
             return false;
         }
-        Article local = articleMapper.selectById(item.getId());
+        // 必须看得见墓碑行：MP selectById 滤掉 deleted=1 → 误判不存在 → INSERT 撞主键 500
+        Article local = syncMapper.selectByIdAny(item.getId());
         if (local == null) {
             Article a = new Article();
             a.setId(item.getId());

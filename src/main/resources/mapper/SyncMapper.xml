@@ -51,4 +51,13 @@
     LIMIT #{limit}
   </select>
 
+  <!-- 按 id 全量取（含墓碑）：push 合并用，绕过 MP 逻辑删除过滤（撞主键 500 的根修） -->
+  <select id="selectByIdAny" resultMap="articleMap">
+    SELECT * FROM article WHERE id = #{id}
+  </select>
+
+  <select id="selectCategoryByIdAny" resultMap="categoryMap">
+    SELECT * FROM category WHERE id = #{id}
+  </select>
+
 </mapper>
