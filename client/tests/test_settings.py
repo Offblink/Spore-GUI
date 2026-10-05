@@ -98,3 +98,17 @@ def test_panel_fixed_switch_defaults_on_and_persists(qapp, tmp_path, monkeypatch
 
     again = _pane(_StorageApi())                     # 新实例回填读回
     assert not again.panel_switch.isChecked()
+def test_save_key_clears_startup_key_error_and_hint(qapp):
+    # 2026-10-03 用户实测：设完 API key，底部红字「API key 未设置」留到重启不消
+    llm = LlmSettings(api_key="")
+    llm.errors.append("API key 未设置——到设置页粘贴后回车保存即生效")
+    pane = _pane(_StorageApi(), llm)
+    assert pane.llm.errors, "预设：启动错误先在场"
+    assert pane._err_hint is not None, "预设：红字标签已建并被引用"
+
+    pane.key_edit.setText("sk-new-key")
+    pane._save_key()
+
+    assert llm.api_key == "sk-new-key"
+    assert not any("API key" in e for e in llm.errors)
+    assert pane._err_hint is None, "撤下的标签引用一并清空"

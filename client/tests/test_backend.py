@@ -22,6 +22,7 @@ from spore_client.backend import (
     is_listening,
     kill_on_parent_exit,
     launch_dir,
+    runtime_base,
     spawn_hidden,
 )
 
@@ -220,3 +221,27 @@ def test_stop_kills_own_process_and_is_idempotent():
     assert proc.poll() is not None       # 真收掉了
     assert not be.owned
     be.stop()                            # 重复调用不炸
+
+
+# ---------- 可写根（1.1.0 装进 Program Files 启动即崩的回归钉） ----------
+
+def test_writable_probes_without_leaving_residue(tmp_path):
+    from spore_client.backend import _writable
+
+    assert _writable(tmp_path) is True
+    assert _writable(tmp_path / "no" / "such") is False   # 建不出来 → OSError → False
+    assert not (tmp_path / ".spore-write-probe").exists()  # 探针即用即删
+
+
+def test_runtime_base_keeps_jar_dir_when_writable(tmp_path):
+    # 开发态/便携目录：行为与旧版逐字节一致（./data ./logs 仍落 jar 旁）
+    assert runtime_base(tmp_path) == tmp_path
+
+
+def test_runtime_base_falls_back_to_spore_home_when_unwritable(tmp_path, monkeypatch):
+    # Program Files 场景：jar 目录不可写 → SPORE_HOME（缺则现建）
+    monkeypatch.setattr("spore_client.backend._writable", lambda d: False)
+    monkeypatch.setenv("SPORE_HOME", str(tmp_path / "home"))
+    out = runtime_base(Path(r"C:\Program Files (x86)\Spore-1.1.0-win64"))
+    assert out == tmp_path / "home"
+    assert out.is_dir()

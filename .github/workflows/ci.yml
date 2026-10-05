@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # 客户端（PySide6）测试必须在 Windows：backend/instance_lock 模块顶层就绑
+  # ctypes.WinDLL("kernel32")，Linux 上 import 即炸；conftest 自带 offscreen QPA。
+  client-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install pinned deps
+        run: >-
+          python -m pip install
+          "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3"
+          httpx markdown qrcode Pillow keyboard pytest ruff
+
+      # pyproject 已配 ruff 规则集（E/F/I/UP/B/SIM）——进 CI 当门禁
+      - name: Lint (ruff)
+        working-directory: client
+        run: python -m ruff check .
+
+      - name: Run tests
+        working-directory: client
+        run: python -m pytest tests
+
+  # 后端（Spring Boot 2.7 / source 8）：JDK 17 可编；仓库无后端测试，包出即绿。
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build backend jar
+        run: mvn -B package

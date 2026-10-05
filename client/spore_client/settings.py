@@ -340,10 +340,14 @@ class SettingsPane(QWidget):
         row.addWidget(self.probe_msg, 1)
         lay.addLayout(row)
 
+        # 启动期错误提示（当前只有「API key 未设置」）：存引用——key 存进来后要能当场撤下，
+        # 否则红字留到重启（2026-10-03 用户实测：设完底部依然显示）
+        self._err_hint = None
         if self.llm.errors:
             err = hint_label("；".join(self.llm.errors))
             err.setStyleSheet("font-size: 12.5px; color: #d02747;")
             lay.addWidget(err)
+            self._err_hint = err
         stack.addWidget(card)
 
         # ================= 卡三：快捷键 =================
@@ -423,12 +427,23 @@ class SettingsPane(QWidget):
         val = self.key_edit.text().strip()
         if val:
             self.llm.api_key = val        # 即改即生效（主窗/引擎持同一实例）
+            self._clear_key_error()
             self.key_edit.clear()
             self._sync_key_ui()
             self._sync_probe_btn()
             self._touch()
         self.status.setText("已自动保存")
         QTimer.singleShot(2200, self._clear_saved_hint)
+
+    def _clear_key_error(self):
+        """key 到位 → 启动期灌进 errors 的「API key 未设置」当场撤（错误列表与页面
+        红字一起清）。只撤 key 这条；别的启动错误该留留。"""
+        if not self.llm.api_key:
+            return
+        self.llm.errors = [e for e in self.llm.errors if "API key" not in e]
+        if self._err_hint is not None:
+            self._err_hint.hide()
+            self._err_hint = None
 
     def _sync_key_ui(self):
         """状态句子进占位符（2026-10-03 反馈：不再单独挂一行灰字）。"""

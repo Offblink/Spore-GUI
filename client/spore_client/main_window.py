@@ -37,7 +37,7 @@ from .capture import CaptureController, HotkeyManager
 from .help_page import HelpPane
 from .log import get_logger
 from .log_page import LogPane
-from .pairing import LanTask, build_payload, initial_of, payload_image
+from .pairing import LanTask, api_base_for_phone, build_payload, initial_of, payload_image
 from .records import RecordsPane
 from .settings import SettingsPane
 from .settings_store import apply_to_llm
@@ -130,7 +130,7 @@ class MainWindow(FluentWindow):
         self._quitting = False
         self._tray_notified = False
         tray = QSystemTrayIcon(app_icon(), self)
-        tray.setToolTip("Spore 搜题——双击打开，右键退出")
+        tray.setToolTip("Spore 搜题——单击打开，右键退出")
         self._tray_menu = QMenu()  # 防 GC
         self._tray_menu.addAction("打开主界面", self._show_main)
         self._tray_menu.addAction("退出 Spore", self._really_quit)
@@ -260,8 +260,9 @@ class MainWindow(FluentWindow):
         if self._qr_pop is None or not self._qr_pop.isVisible():
             return  # 等 token 期间被收掉了就别再刷
         try:
+            # 载荷里的 api 换成局域网 IP（桌面自己用 127.0.0.1，手机扫到回环就废了）
             self._qr_img.setPixmap(
-                payload_image(build_payload(self.api.base, token)))
+                payload_image(build_payload(api_base_for_phone(self.api.base), token)))
         except ImportError:
             self._qr_img.setText("缺 qrcode 库")
 
@@ -454,7 +455,7 @@ class MainWindow(FluentWindow):
             if not self._tray_notified:
                 self._tray_notified = True
                 self._tray.showMessage(
-                    "Spore 仍在运行", "已收进托盘：双击托盘图标打开，右键退出",
+                    "Spore 仍在运行", "已收进托盘：单击托盘图标打开，右键退出",
                     QSystemTrayIcon.MessageIcon.Information, 3000)
             return
         for h in self._hotkeys:
