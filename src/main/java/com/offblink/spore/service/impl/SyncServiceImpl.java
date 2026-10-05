@@ -156,7 +156,14 @@ public class SyncServiceImpl implements SyncService {
             categoryMapper.insert(c);
             return true;
         }
+        boolean ownerChanged = !userId.equals(local.getUserId());
+        if (ownerChanged) {
+            local.setUserId(userId); // 同文章：归属跟推送者走（改绑后重推即迁籍）
+        }
         if (!lwwWins(item.getUpdated(), local.getUpdateTime())) {
+            if (ownerChanged) {
+                categoryMapper.updateById(local);
+            }
             return false; // 服务端新，保留服务端
         }
         if (item.getParentId() != null && item.getParentId().equals(item.getId())) {
@@ -203,7 +210,17 @@ public class SyncServiceImpl implements SyncService {
             articleMapper.insert(a);
             return true;
         }
+        // 归属跟推送者走：LAN token 是本机信任边界；改绑（lan_token_uid 换人）后
+        // 手机重推自己的旧行必须能把 user_id 迁过来——否则该行永远留在旧账号名下，
+        // 桌面（新账号）永远看不见（2026-10-05「mobile 不回流 PC」实锤根因之一）。
+        boolean ownerChanged = !userId.equals(local.getUserId());
+        if (ownerChanged) {
+            local.setUserId(userId);
+        }
         if (!lwwWins(item.getUpdated(), local.getUpdateTime())) {
+            if (ownerChanged) {
+                articleMapper.updateById(local); // 内容被 LWW 拒也把归属落库
+            }
             return false;
         }
         if (item.getCategoryId() != null) {
