@@ -22,4 +22,11 @@ public interface SyncService {
      * 顺序固定 categories → articles（引用完整性）。
      */
     Map<String, Object> push(Long userId, SyncPushReq req);
+
+    /**
+     * 题图落盘后把相对路径写回 article 行并抬 update_time（其它端靠增量 pull 学到新路径）。
+     * 手机端可能先推图后推行（行还不存在 → 0 行匹配是常态，路径随后续行 push 带回）；
+     * 桌面端行先建后推图，这里必须真写——pushAttachment 端点只负责写文件。
+     */
+    void bindAttachment(Long userId, String articleId, String path);
 }

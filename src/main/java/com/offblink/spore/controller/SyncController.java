@@ -77,6 +77,9 @@ public class SyncController {
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         Map<String, String> data = new LinkedHashMap<String, String>();
         data.put("path", dir.relativize(target).toString());
+        // 路径写回 article 行（注释宣称但此前缺失的一步）：桌面端行先建后推图靠它落 path；
+        // 手机端先推图后推行时行不存在，0 行匹配无害，路径随后续行 push 带回
+        syncService.bindAttachment(UserContext.getUserId(), safeId, data.get("path"));
         return R.ok(data);
     }
 

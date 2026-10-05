@@ -1,6 +1,7 @@
 package com.offblink.spore.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.offblink.spore.common.BizException;
 import com.offblink.spore.common.ErrorCode;
 import com.offblink.spore.controller.dto.SyncPushReq;
@@ -58,17 +59,36 @@ public class SyncServiceImpl implements SyncService {
         List<Category> cats = syncMapper.selectCategoriesSince(userId, since, capped);
         List<Article> arts = syncMapper.selectArticlesSince(userId, since, capped);
 
-        // nextCursor = 本批两类对象里的最大 update_time（都取毫秒，谁大取谁）
-        long nextCursor = cursor;
+        long maxCat = 0L;
         List<Map<String, Object>> catOut = new ArrayList<Map<String, Object>>();
         for (Category c : cats) {
             catOut.add(categoryPayload(c));
-            nextCursor = Math.max(nextCursor, toMillis(c.getUpdateTime()));
+            maxCat = Math.max(maxCat, toMillis(c.getUpdateTime()));
         }
+        long maxArt = 0L;
         List<Map<String, Object>> artOut = new ArrayList<Map<String, Object>>();
         for (Article a : arts) {
             artOut.add(articlePayload(a));
-            nextCursor = Math.max(nextCursor, toMillis(a.getUpdateTime()));
+            maxArt = Math.max(maxArt, toMillis(a.getUpdateTime()));
+        }
+
+        // nextCursor = 本批两类里的最大 update_time（都取毫秒，谁大取谁）。
+        // 但任一类被 limit 截断（本批没下发完）时，游标不得超过该类的本批最大值——
+        // 否则另一类把游标越级抬走，截断类里 >max 的行会被 `> cursor` 永久跳过（同步不全的一条腿）。
+        boolean catsHit = cats.size() >= capped;
+        boolean artsHit = arts.size() >= capped;
+        long nextCursor;
+        if (catsHit || artsHit) {
+            long cap = Long.MAX_VALUE;
+            if (catsHit) {
+                cap = Math.min(cap, maxCat);
+            }
+            if (artsHit) {
+                cap = Math.min(cap, maxArt);
+            }
+            nextCursor = Math.max(cursor, cap);
+        } else {
+            nextCursor = Math.max(cursor, Math.max(maxCat, maxArt));
         }
 
         Map<String, Object> data = new LinkedHashMap<String, Object>();
@@ -101,6 +121,19 @@ public class SyncServiceImpl implements SyncService {
         Map<String, Object> data = new LinkedHashMap<String, Object>();
         data.put("results", results);
         return data;
+    }
+
+    /**
+     * 题图路径写回（实体更新：非 null 字段才进 SET，update_time 由 MetaFillHandler 抬——
+     * 其它端靠增量 pull 看到新路径）。带 user_id 作用域，防跨用户写。
+     */
+    @Override
+    public void bindAttachment(Long userId, String articleId, String path) {
+        Article upd = new Article();
+        upd.setAttachmentPath(path);
+        LambdaUpdateWrapper<Article> w = new LambdaUpdateWrapper<Article>();
+        w.eq(Article::getId, articleId).eq(Article::getUserId, userId);
+        articleMapper.update(upd, w);
     }
 
     private boolean mergeCategory(Long userId, SyncPushReq.CategoryItem item) {
