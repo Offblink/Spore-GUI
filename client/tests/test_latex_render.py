@@ -15,6 +15,7 @@ import re
 from PySide6.QtGui import QColor, QImage, QPainter, QTextDocument
 
 from spore_client.answer_window import _md_html
+from spore_client.latex_render import extract_math
 from spore_client.records import _detail_html
 
 # 四类分隔符（每类都必须出渲染产物）
@@ -134,3 +135,49 @@ def test_broken_formula_escapes_html():
 def test_plain_text_untouched():
     assert 'data:image/png' not in _md_html("普通回答，没有公式 1+1=2。")
     assert 'data:image/png' not in _detail("普通回答。")
+
+
+# ------------------------------------------ 行内分隔符四条（主会话 2026-10-05 拍板）
+def test_rule1_digit_opener_renders():
+    """规则1：开 `$` 后允许 ASCII 数字——`$2+2=4$` 必须渲染成图。"""
+    html = _md_html("口算 $2+2=4$ 结束")
+    assert 'data:image/png;base64,' in html
+    assert all(n > 40 for n in _png_alphas(html))
+
+
+def test_rule2_closer_not_followed_by_digit():
+    """规则2：闭 `$` 后是数字 → 不配对——「单价 $5，$8 元」整段留原文。"""
+    html = _md_html("单价 $5，$8 元")
+    assert 'data:image/png' not in html, "价格对被当公式吞了"
+    assert "$5" in html and "$8" in html, "价格必须原样可见"
+
+    # 真实混排：价格 + 空格 + 公式 → 价格留原文、公式照常出图
+    html = _md_html("单价 $5，公式 $x^2$ 元")
+    assert 'data:image/png;base64,' in html
+    assert "$5" in html
+
+
+def test_rule3_escaped_dollar_not_delimiter_and_literal():
+    """规则3：`\\$` 不当分隔符，且渲染成字面 `$`（不露反斜杠）。"""
+    html = _md_html(r"转义 \$5 与 $x^2$")
+    assert 'data:image/png;base64,' in html, "真公式仍要渲染"
+    assert "\\$5" not in html, "转义美元符要显示成字面 $"
+    assert "$5" in html
+
+
+def test_rule4_inline_does_not_cross_lines():
+    """规则4：行内裸 `$` 跨行不配对（块级可跨行，见下）。"""
+    holed, blocks = extract_math("$a\nb$")
+    assert blocks == [], "行内跨行不许配对"
+    assert holed == "$a\nb$"
+    html = _md_html("$a\nb$")
+    assert 'data:image/png' not in html
+    assert "$a" in html                      # 源码原样可见
+
+
+def test_rule4_block_may_cross_lines():
+    """块级 `$$..$$` 允许跨行：抽取层必须吃下（mathtext 渲不了就回退源码）。"""
+    _, blocks = extract_math("$$a\nb$$")
+    assert len(blocks) == 1, "块级应跨行抽取"
+    _, blocks = extract_math("\\[a\nb\\]")
+    assert len(blocks) == 1, "\\[..\\] 应跨行抽取"

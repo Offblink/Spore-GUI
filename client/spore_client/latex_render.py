@@ -1,9 +1,13 @@
 """LaTeX 数学公式 → PNG data URI 内联图（回答面板 + 记录详情两个渲染点共用）。
 
-分隔符契约（2026-10-05 主会话拍板，MV3 端按同一契约实现）：
-- 块级：`$$..$$` 与 `\\[..\\]`；
-- 行内：`$..$`（开 `$` 后非空白、闭 `$` 前非空白 → `$5` 这类价格文本不触发）
-  与 `\\(..\\)`；
+分隔符契约（2026-10-05 主会话拍板，MV3 端按同一契约实现，两端逐条一致）：
+- 块级：`$$..$$` 与 `\\[..\\]`，可跨行；
+- 行内 `$..$` 四条（Pandoc 口径）：
+  1) 开 `$` 后非空白——**允许 ASCII 数字开头**（`$2+2=4$` 必须渲染）；
+  2) 闭 `$` 前非空白，且闭 `$` 后不是 ASCII 数字
+     （治「单价 $5，$8 元」这类价格误配被吞）；
+  3) `\\$` 转义美元符永不当分隔符，且渲染成字面 `$`；
+  4) 行内不跨行（字符类排除 `\\n`；`\\(..\\)` 同）；
 - 公式在 markdown 转义**之前**抽出（否则公式里的 `*` `_` 会被 markdown 吃掉）；
 - 渲染失败（mathtext 不认识的命令/环境、空盒）→ 原样显示源码，
   不静默丢弃、不显示空白。
@@ -36,8 +40,12 @@ _RENDER_DPI = 150      # 实际渲染 dpi：150/100 → 150% 缩放屏上 1:1 �
 
 _BLOCK_DOLLAR = re.compile(r"\$\$(.+?)\$\$", re.S)
 _BLOCK_BRACKET = re.compile(r"\\\[(.+?)\\\]", re.S)
-_INLINE_DOLLAR = re.compile(r"\$(?=\S)([^$]+?)(?<!\s)\$")   # 边界防 `$5` 误伤
-_INLINE_PAREN = re.compile(r"\\\((.+?)\\\)", re.S)
+# 行内 $：两侧 (?<!\\) = 规则3（\$ 不当分隔符）；(?=\S) = 规则1（后随非空白，
+# 数字允许）；(?<!\s) = 规则2 前半（前贴非空白）；(?![0-9]) = 规则2 后半（闭 $ 后
+# 不是 ASCII 数字，防「单价 $5，$8 元」误配）；[^$\n] = 规则4 不跨行
+_INLINE_DOLLAR = re.compile(r"(?<!\\)\$(?=\S)([^$\n]+?)(?<!\s)(?<!\\)\$(?![0-9])")
+# 行内 \(..\)：规则4 同样不跨行（无 re.S）
+_INLINE_PAREN = re.compile(r"\\\((.+?)\\\)")
 # \x00 不在 markdown 的转义/内部占位（markdown 内部用 \x02/\x03，避开）
 _PH = "\x00math{}\x00"
 _PH_RE = re.compile("\x00math(\\d+)\x00")
@@ -120,7 +128,9 @@ def extract_math(text: str) -> tuple[str, list[str]]:
 
     for rx in (_BLOCK_DOLLAR, _BLOCK_BRACKET, _INLINE_DOLLAR, _INLINE_PAREN):
         out = rx.sub(_sub, out)
-    return out, blocks
+    # 规则3 后半：\$ 渲染成字面 `$`（python-markdown 不把 $ 列进可转义标点，
+    # `\$` 原样留着会露反斜杠）——公式已抽走，这里替换不会再产生新分隔符
+    return out.replace("\\$", "$"), blocks
 
 
 def restore_math(html: str, blocks: list[str]) -> str:
