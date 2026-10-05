@@ -117,7 +117,9 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    public String lanToken() {
+    public String lanToken(Long userId) {
+        // 谁展示配对二维码，手机就同步谁：返回 token 前先改绑（语义见 TokenService.rebindLanUser）
+        tokenService.rebindLanUser(userId);
         return tokenService.lanToken();
     }
 

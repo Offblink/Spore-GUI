@@ -51,10 +51,13 @@ public class AuthController {
         return R.ok();
     }
 
-    /** LAN token（扫码配对的载荷）；仅登录后的设置页可取——不登录拿到也过不了 AOP */
+    /**
+     * LAN token（扫码配对的载荷）；仅登录后的设置页可取——不登录拿到也过不了 AOP。
+     * 取用即把 token 改绑到当前登录用户：谁展示二维码，手机就同步谁。
+     */
     @GetMapping("/lan-token")
     public R<String> lanToken() {
-        return R.ok(authService.lanToken());
+        return R.ok(authService.lanToken(UserContext.getUserId()));
     }
 
     /**

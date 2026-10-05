@@ -124,6 +124,16 @@ public class TokenService {
         put(KEY_LAN_UID, String.valueOf(userId));
     }
 
+    /**
+     * 改绑 LAN token 到当前桌面登录用户（取二维码时调用）：token 本体不变——
+     * 手机已存的 token 继续有效，只是背后身份换成新用户。
+     * 改绑后手机下一轮 pull/push 即按新用户；旧用户（如 admin）的历史行不再下发也不再接收。
+     */
+    public synchronized void rebindLanUser(Long userId) {
+        lanTokenUserId = userId;
+        put(KEY_LAN_UID, String.valueOf(userId));
+    }
+
     /** LAN token 本体（设置页渲染二维码用） */
     public String lanToken() {
         return lanToken;

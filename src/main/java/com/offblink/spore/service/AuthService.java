@@ -22,8 +22,8 @@ public interface AuthService {
     /** 当前登录用户信息 + 权限码列表（手机配对的连通验证也走它） */
     UserVO me(Long userId);
 
-    /** LAN token（设置页渲染二维码用） */
-    String lanToken();
+    /** LAN token（设置页渲染二维码用）；取用时把 token 改绑到该用户——谁展示二维码，手机就同步谁 */
+    String lanToken(Long userId);
 
     /** 轮换并签发本机设备令牌（登录后调用；每次信任动作都换新值，旧值即刻作废） */
     String createDeviceToken(Long userId);
