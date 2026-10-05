@@ -161,3 +161,56 @@ def test_placeholder_never_created_after_turn_finished(main_win, monkeypatch):
     main_win._placeholder_sync(sess)
     assert posts == []
     assert sess.backend_id == ""
+
+
+def test_placeholder_filled_once_after_initial_answer(main_win, qapp, monkeypatch):
+    """P3 增强：回合首个 verify-delta（=阶段A初答完毕）→ 占位行立即补上内容，
+    用户不再看到空白「新会话」；每回合只补一次；没占位的历史接续回合不碰；
+    turn-end 收尾把填充旗收掉、全量 PUT 照旧。"""
+    from spore_client.answer.session import Msg, Session
+    from spore_client.records import UNREAD
+
+    puts: list = []
+    monkeypatch.setattr(main_win.api, "update_article",
+                        lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
+    monkeypatch.setattr(main_win.api, "push_attachment",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(main_win.records, "reload", lambda: None)
+
+    # 历史接续回合（backend_id 有但没占位）：verify-delta 不许触发补写
+    plain = Session(title="历史回合", backend_id="art-H")
+    plain.messages.append(Msg(role="assistant", kind="answer", ans="旧答案"))
+    monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: plain)
+    try:
+        main_win._engine_event(
+            {"type": "verify-delta", "sid": plain.id, "ran": True})
+        qapp.processEvents()
+        assert puts == []
+
+        # 占位回合：首个 verify-delta 补一次，第二个不再补
+        sess = Session(title="截图回合", backend_id="art-F")
+        sess.messages.append(Msg(role="user", kind="answer", text="", hasImage=True))
+        sess.messages.append(Msg(role="assistant", kind="answer", ans="B"))
+        main_win._placeholders[sess.id] = "art-F"
+        monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: sess)
+        main_win._engine_event(
+            {"type": "verify-delta", "sid": sess.id, "ran": True})
+        qapp.processEvents()
+        assert len(puts) == 1
+        assert puts[0][0] == "art-F" and puts[0][1]["messages"]
+        assert puts[0][1]["status"] == "answering"   # 回合未结束，仍是回答中
+
+        main_win._engine_event(
+            {"type": "verify-delta", "sid": sess.id, "ran": True, "done": True})
+        qapp.processEvents()
+        assert len(puts) == 1                        # 每回合只补一次
+
+        main_win._engine_event({"type": "turn-end", "sid": sess.id})
+        assert sess.id not in main_win._ph_filled    # 旗随 turn-end 收掉
+        qapp.processEvents()                         # 落盘定时器执行 → 全量 PUT
+        assert len(puts) == 2
+        assert puts[1][0] == "art-F" and puts[1][1]["messages"]
+    finally:
+        main_win._placeholders.pop(sess.id, None)
+        main_win._ph_filled.discard(sess.id)
+        UNREAD.discard("art-F")

@@ -88,6 +88,7 @@ class MainWindow(FluentWindow):
         self._delta_counts: dict[str, int] = {}
         self._t_turn = time.monotonic()  # 回合计时，_on_captured 时重置
         self._placeholders: dict[str, str] = {}  # sess.id → 开局占位行 id（P3）
+        self._ph_filled: set[str] = set()  # 占位行已补过初答内容的回合（P3 增强，每回合只补一次）
 
         self.records = RecordsPane(api)
         self.log_page = LogPane()
@@ -371,10 +372,15 @@ class MainWindow(FluentWindow):
         sess = self.engine.session_by_id(ev.get("sid")) or self.engine.session
         self.answer_window.on_event(ev)  # 面板内部按 sid 过滤（并行回合）
         self.records.on_engine_event(sess, ev)  # 记录页直播（§ 反馈）
+        if t == "verify-delta":
+            # 初答完毕（阶段A收口后的首个 verify-delta）：占位行先补上内容，
+            # 用户不再盯着一条空白「新会话」；turn-end 仍会全量 PUT 收尾
+            self._maybe_fill_placeholder(sess)
         if t == "turn-end":
             LOG.info("turn-end in %.1fs deltas=%s",
                      time.monotonic() - self._t_turn, self._delta_counts)
             self._delta_counts = {}
+            self._ph_filled.discard(sess.id)
             if ev.get("error") or ev.get("aborted"):
                 # 中止/出错维持既有语义（不落库）——占位行必须收掉，
                 # 否则列表留一条永远「回答中」的僵尸；没占过位则为 no-op
@@ -466,6 +472,30 @@ class MainWindow(FluentWindow):
         except Exception as e:  # noqa: BLE001 —— 占位失败不掀桌，兜底在 turn-end
             LOG.error("placeholder persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
+
+    def _maybe_fill_placeholder(self, sess):
+        """占位行内容填充（P3 增强）：回合首个 verify-delta = 阶段A初答完毕
+        （三分支——跳核实/关核实/跑核实——都在 phaseA 后先发它），此刻把已有
+        内容 PUT 进占位行。每个回合只补一次；没占过位（历史接续回合）不碰。"""
+        if sess.id not in self._placeholders or sess.id in self._ph_filled:
+            return
+        self._ph_filled.add(sess.id)
+        QTimer.singleShot(0, lambda: self._fill_placeholder_sync(sess))
+
+    def _fill_placeholder_sync(self, sess):
+        # 排队到执行时回合可能已收尾：占位已收（flag 没了）就不补
+        if not sess.backend_id or sess.id not in self._placeholders:
+            return
+        try:
+            self.api.update_article(
+                sess.backend_id, title=sess.title,
+                status=sess.status or "answering",
+                messages=[m.to_dict() for m in sess.messages])
+            LOG.info("placeholder filled id=%s msgs=%d", sess.backend_id,
+                     len(sess.messages))
+            self.records.reload()
+        except Exception as e:  # noqa: BLE001 —— 补内容失败不掀桌，turn-end 全量重试
+            LOG.error("placeholder fill failed: %s", e)
 
     def _drop_placeholder(self, sess, art_id: str | None = None):
         """收掉开局占位行：中止/出错不落库（既有语义）→ DELETE；
