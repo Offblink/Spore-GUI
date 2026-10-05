@@ -97,4 +97,24 @@
       </plugin>
     </plugins>
   </build>
+
+  <!-- 发行构建 mvn -P dist：把 application-local.yml（本机 DB 口令，gitignore）挡在 jar 外——
+       发行包的口令走 jar 旁的外部 file:./application-local.yml（见发行 README.txt），
+       真实口令绝不进发布资产（出厂检查硬红线；v1.1.1 曾把口令打进 jar 泄进 release）。
+       开发/IDE 不带 -P 照旧走 classpath，工作流不变。 -->
+  <profiles>
+    <profile>
+      <id>dist</id>
+      <build>
+        <resources>
+          <resource>
+            <directory>src/main/resources</directory>
+            <excludes>
+              <exclude>application-local.yml</exclude>
+            </excludes>
+          </resource>
+        </resources>
+      </build>
+    </profile>
+  </profiles>
 </project>

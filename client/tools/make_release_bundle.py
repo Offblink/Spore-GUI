@@ -38,8 +38,15 @@ def find_jar(ver: str) -> Path:
     jars = [p for p in cands if not p.name.endswith("-sources.jar")]
     if not jars:
         sys.exit("缺后端 jar：先在仓库根跑 mvn -DskipTests package")
+    jar = jars[-1]
+    # 永久守卫：jar 内绝不许带 application-local.yml（本机 DB 口令）——
+    # 忘带 -P dist 打的包在这里当场拦下（v1.1.1 曾把口令打进 jar 放进 release）
+    with zipfile.ZipFile(jar) as z:
+        if "BOOT-INF/classes/application-local.yml" in z.namelist():
+            sys.exit(f"拒绝组装：{jar.name} 内嵌了 application-local.yml（真实 DB 口令）。"
+                     "请在仓库根用 mvn -DskipTests clean package -P dist 重建后再打包")
     target = DIST / f"spore-backend-{ver}.jar"
-    shutil.copy2(jars[-1], target)
+    shutil.copy2(jar, target)
     return target
 
 
