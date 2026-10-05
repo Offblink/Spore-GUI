@@ -50,3 +50,35 @@ def test_help_page_registered(main_win):
     # 2026-10-03 要求新增帮助页：挂进左索引（第四页）
     assert main_win.help_page.objectName() == "helpPage"
     assert main_win.stackedWidget.indexOf(main_win.help_page) >= 0
+
+
+def test_persist_turn_writes_backend_id_so_next_turn_puts(main_win, monkeypatch):
+    """2026-10-05 实测 bug 回归：POST 后不回写 sess.backend_id → 同一会话的
+    下一个追问回合再次 POST，造出两个同名会话（一个第一次对话、
+    一个两次对话一起）。第二回合必须走 PUT 更新原会话。"""
+    from spore_client.answer.session import Msg, Session
+    from spore_client.records import UNREAD
+
+    sess = Session(title="SQA 范围")
+    sess.messages.append(Msg(role="assistant", kind="answer", ans="B（错）"))
+    posts: list = []
+    puts: list = []
+    monkeypatch.setattr(main_win.api, "create_article",
+                        lambda body: posts.append(body) or {"id": "art-77"})
+    monkeypatch.setattr(main_win.api, "update_article",
+                        lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
+    monkeypatch.setattr(main_win.api, "push_attachment",
+                        lambda *a, **k: None)
+    try:
+        main_win._persist_turn_sync(sess)          # 第一回合：POST 新会话
+        assert posts and not puts
+        assert sess.backend_id == "art-77"         # ← 回写是本测试的核心
+
+        main_win._persist_turn_sync(sess)          # 追问回合：PUT 原会话
+        assert len(posts) == 1                     # 绝不再开新会话
+        assert puts and puts[0][0] == "art-77"
+    finally:
+        UNREAD.discard("art-77")                   # 别把未读账带进别的测试
+        t = main_win.records._task
+        if t is not None:
+            t.wait(3000)                           # reload 线程收尾

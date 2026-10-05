@@ -305,6 +305,18 @@ class SettingsPane(QWidget):
         row.addWidget(self.fast_switch)
         lay.addLayout(row)
 
+        # 回答面板出生位（2026-10-05 用户点名）：默认开 = 记住上次位置，
+        # 下次还在那儿 born；关掉 = 回到旧行为（出现在截选/鼠标附近）。
+        # 不进 LlmSettings：面板每次 new_turn 直接读 settings_store。
+        self.panel_switch = SwitchButton()
+        self.panel_switch.setObjectName("panelFixedSwitch")
+        self.panel_switch.checkedChanged.connect(self._panel_fixed_changed)
+        row = QHBoxLayout()
+        row.addWidget(setting_label(
+            "回答面板位置固定（记住上次位置，下次还在那里出现）"), 1)
+        row.addWidget(self.panel_switch)
+        lay.addLayout(row)
+
         lay.addWidget(field_label("上下文保留条数"))
         self.history_spin = _NoWheelSpinBox()
         self.history_spin.setObjectName("historySpin")
@@ -377,6 +389,9 @@ class SettingsPane(QWidget):
         self.history_spin.setValue(int(self.llm.history_limit))
         self.auto_switch.setChecked(bool(self.llm.auto_verify))
         self.fast_switch.setChecked(bool(self.llm.fast_no_think))
+        # 默认开（键缺失 = True，用户拍板的默认值）
+        self.panel_switch.setChecked(
+            bool(settings_store.read().get("panelFixed", True)))
         self._sync_key_ui()
 
         self._ready = True
@@ -392,6 +407,16 @@ class SettingsPane(QWidget):
         if not self._ready:
             return
         self._save_timer.start()          # 连续敲键只落最后一次
+
+    def _panel_fixed_changed(self, on: bool):
+        """面板固定开关：不走 LlmSettings/_collect，直接白名单落盘。"""
+        if not self._ready:
+            return                        # 回填 setChecked 触发的那次不保存
+        data = settings_store.read()
+        data["panelFixed"] = bool(on)
+        settings_store.write(data)
+        self.status.setText("已自动保存")
+        QTimer.singleShot(2200, self._clear_saved_hint)
 
     def _save_key(self):
         """粘贴新 key 回车 → 覆盖保存（永不回显；空输入只刷新状态行）。"""

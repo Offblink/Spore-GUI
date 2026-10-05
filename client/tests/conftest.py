@@ -9,6 +9,10 @@ import os
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 单例互斥体名带 USERNAME（instance_lock）——不改掉的话，**开着 Spore.exe
+# 跑门禁必红**（真进程占着同一把锁，2026-10-05 实测）。测试进程换用户名 =
+# 换一把锁，隔离出真应用状态；USERNAME 只被 instance_lock/main 读（已 grep）。
+os.environ["USERNAME"] = "spore-pytest"
 
 
 @pytest.fixture(scope="session")

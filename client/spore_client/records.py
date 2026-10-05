@@ -8,6 +8,9 @@
 - 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
 - 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目·点开**模态框**选）+ 标题 +
   `MM-DD HH:mm`，点行 = 右栏显示内容；标题超宽右侧省略号，不挤行尾按钮；
+- **涂抹多选**（2026-10-05，照 mobile record.js）：长按会话行 500ms 进多选
+  （该行直接勾上）→ 单选框起笔涂抹连选（折返换向、段接力），模式里点行 =
+  勾选；底部批量栏 `已选 N 项 + ★收藏 / ⇄移入 / ×删除 / 取消`，换筛选退模式；
 - **无右键菜单**（2026-10-03 用户死命令：行内操作全按钮化，§8-3）；
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
@@ -34,7 +37,18 @@ from contextlib import suppress
 from pathlib import Path
 
 import markdown
-from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -69,6 +83,11 @@ from .answer.session import Session, msgs_of
 from .api import ApiClient, ApiError, NetworkError
 
 FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
+
+# 后台完成、当时没在看的会话 id（客户端本地未读账；后端没有 unread 字段）。
+# 主窗 turn-end 落库后 RecordsPane.mark_unread()，点开即 discard ——
+# 记录页会话行与回答面板 💬 会话行共用这一份（MV3 unread 红点同语义）。
+UNREAD: set[str] = set()
 ACCENT = "#ec4899"
 
 STATUS_LABEL = {
@@ -232,7 +251,8 @@ class _MoveDialog(QDialog):
     科目单选（按层级缩进）+「未分组」；预选当前归属，取消 = None。
     """
 
-    def __init__(self, cats: list[dict], current: str, parent=None):
+    def __init__(self, cats: list[dict], current: str, parent=None,
+                 mixed: bool = False):
         super().__init__(parent)
         self.setWindowTitle("移入科目")
         self.setModal(True)
@@ -267,9 +287,12 @@ class _MoveDialog(QDialog):
             self._targets.append(cid)
             opts.addWidget(rb)
         root.addLayout(opts)
-        checked = (self._targets.index(current)
-                   if current in self._targets else 0)  # 归属失效 → 落回未分组
-        self._radios[checked].setChecked(True)
+        # 归属失效 → 落回未分组；批量混合归属（mobile openPicker 同款）→ 不预选，
+        # 避免误把混合归属批量改成「未分组」
+        if not mixed:
+            checked = (self._targets.index(current)
+                       if current in self._targets else 0)
+            self._radios[checked].setChecked(True)
         btns = QHBoxLayout()
         btns.setSpacing(10)
         btns.addStretch(1)
@@ -292,8 +315,8 @@ class _MoveDialog(QDialog):
 
     @staticmethod
     def get_target(cats: list[dict], current: str,
-                   parent=None) -> str | None:
-        dlg = _MoveDialog(cats, current, parent)
+                   parent=None, mixed: bool = False) -> str | None:
+        dlg = _MoveDialog(cats, current, parent, mixed=mixed)
         return dlg._selected() if dlg.exec() == QDialog.Accepted else None
 
 
@@ -321,6 +344,19 @@ class SessionCard(QFrame):
         h = QHBoxLayout(self)
         h.setContentsMargins(10 + depth * 14, 7, 8, 7)
         h.setSpacing(9)
+
+        # 涂抹多选的单选框（2026-10-05 照 mobile record.js/.ck）：
+        # 只在多选模式里露脸；起笔按在它上面 = 涂抹连选。
+        # 必须是 QLabel 而非按钮：按钮会吃掉按下不冒泡，起笔就永远到不了
+        # 行的 eventFilter（QLabel 忽略鼠标 → 冒泡到行，与标题 label 同路）
+        self.ck = QLabel("")
+        self.ck.setFixedSize(16, 16)
+        self.ck.setAlignment(Qt.AlignCenter)
+        self.ck.setVisible(False)
+        self._checked = False
+        self._multi = False
+        self._apply_ck()
+        h.addWidget(self.ck)
 
         self.star = QPushButton("★")  # U+2605，字符+color，绝不用 ⭐
         self.star.setFixedSize(24, 24)
@@ -361,6 +397,13 @@ class SessionCard(QFrame):
 
         h.addWidget(self.star)
         h.addLayout(col, 1)
+        # 未读红点（MV3 review.html .d）：后台完成的会话标记，点开即消
+        self.dot = QLabel()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setStyleSheet(
+            "QLabel{background:#ec4899; border-radius:4px;}")
+        self.dot.setVisible(False)
+        h.addWidget(self.dot)
         h.addWidget(self.rename_btn)
         h.addWidget(self.move_btn)
         h.addWidget(self.del_btn)
@@ -382,12 +425,45 @@ class SessionCard(QFrame):
         self._fav = fav
         self._apply()
 
+    def set_unread(self, on: bool):
+        self.dot.setVisible(bool(on))
+
+    # ---- 涂抹多选（2026-10-05，照 mobile record.js）：模式显隐 + 勾选态 ----
+    def set_multi_mode(self, on: bool):
+        """多选模式开关：单选框显隐；退出时顺带清掉本行勾选显示。"""
+        self._multi = bool(on)
+        self.ck.setVisible(self._multi)
+        if not self._multi:
+            self._checked = False
+        self._apply_ck()
+        self._apply()
+
+    def set_checked(self, on: bool):
+        self._checked = bool(on)
+        self._apply_ck()
+        self._apply()
+
+    def _apply_ck(self):
+        if self._checked:
+            self.ck.setText("✓")   # U+2713，字号小、居中
+            self.ck.setStyleSheet(
+                "QLabel{background:#ec4899; border:1.5px solid #ec4899;"
+                " border-radius:8px; color:#ffffff; font-size:10px;"
+                " font-weight:700;}")
+        else:
+            self.ck.setText("")
+            self.ck.setStyleSheet(
+                "QLabel{background:#ffffff; border:1.5px solid #c3c8dd;"
+                " border-radius:8px;}")
+
     def set_selected(self, on: bool):
         self._sel = on
         self._apply()
 
     def _apply(self):
-        if self._sel:
+        if self._checked:
+            bg, hover = "#fff0f7", "#ffe4f1"   # 多选勾选（MV3 .rrow.on）
+        elif self._sel:
             bg, hover = "#ffeef7", "#ffe4f1"   # 选中：右栏正看这条
         elif self._fav:
             bg, hover = "#fff9ea", "#f5f7fd"   # 收藏行底
@@ -727,6 +803,18 @@ class RecordsPane(QWidget):
         self._cats: list[dict] = []
         self._expanded: set[str] = set()  # 展开中的科目 id（点分类行翻转）
         self._session_cards: list[SessionCard] = []
+        # ---- 涂抹多选状态（2026-10-05 照 mobile record.js） ----
+        self._selecting = False          # 多选模式（长按进、取消/换筛选退出）
+        self._multi: set[str] = set()    # 勾选的会话 id
+        self._paint = None               # 本笔涂抹 {card,seg,prev,dx,dir,moved}
+        self._press_card: SessionCard | None = None
+        self._press_pos = QPoint()
+        self._press_moved = False
+        self._hold_fired = False
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setInterval(500)   # HOLD_MS 同款：500ms 长按进多选
+        self._hold_timer.timeout.connect(self._hold_timeout)
         self._shot_path = ""
         self._shot_pm = QPixmap()
         self._cat_task: _CatTask | None = None
@@ -802,6 +890,53 @@ class RecordsPane(QWidget):
         self._tree_box.addStretch(1)
         tree_scroll.setWidget(self._tree_widget)
         sv.addWidget(tree_scroll, 1)
+
+        # ---- 多选底栏（mobile #batchbar 同款；只在多选模式露出） ----
+        self._batch_bar = QFrame()
+        self._batch_bar.setObjectName("batchBar")
+        self._batch_bar.setStyleSheet(
+            "#batchBar{background:#ffffff; border-top:1px solid #e6e8f2;}")
+        bv = QVBoxLayout(self._batch_bar)
+        bv.setContentsMargins(4, 8, 4, 4)
+        bv.setSpacing(6)
+        btop = QHBoxLayout()
+        btop.setSpacing(6)
+        self._sel_label = QLabel("已选 0 项")
+        self._sel_label.setStyleSheet(
+            "QLabel{color:#c2185b; font-size:13px; font-weight:600;"
+            " background:transparent;}")
+        self.batch_cancel = QPushButton("取消")
+        bcancel = self.batch_cancel
+        bcancel.setCursor(Qt.PointingHandCursor)
+        bcancel.setStyleSheet(
+            "QPushButton{background:transparent; border:none; color:#7c819c;"
+            " font-size:13px; border-radius:8px; padding:3px 8px;}"
+            "QPushButton:hover{background:#f2f4fb; color:#1a1d2e;}")
+        bcancel.clicked.connect(lambda: self._set_selecting(False))
+        btop.addWidget(self._sel_label, 1)
+        btop.addWidget(bcancel)
+        bv.addLayout(btop)
+        bops = QHBoxLayout()
+        bops.setSpacing(6)
+        _op = ("QPushButton{background:#f2f4fb; border:none; border-radius:9px;"
+               " padding:7px 0; font-size:13px; font-weight:600; color:#4a4f6b;}"
+               "QPushButton:hover{background:#e8ebf7;}"
+               "QPushButton:disabled{color:#b6bcd3;}")
+        self.batch_fav = QPushButton("★ 收藏")
+        self.batch_move = QPushButton("⇄ 移入")
+        self.batch_del = QPushButton("× 删除")
+        for b in (self.batch_fav, self.batch_move, self.batch_del):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(_op)
+            bops.addWidget(b, 1)
+        self.batch_del.setStyleSheet(
+            _op + "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        self.batch_fav.clicked.connect(self._batch_fav)
+        self.batch_move.clicked.connect(self._batch_move)
+        self.batch_del.clicked.connect(self._batch_delete)
+        bv.addLayout(bops)
+        sv.addWidget(self._batch_bar)
+        self._batch_bar.setVisible(False)
 
         # ---------- 右栏：选中会话的内容区 ----------
         self.main_box = QFrame()
@@ -1008,6 +1143,10 @@ class RecordsPane(QWidget):
     def _add_session(self, art: dict, depth: int):
         card = SessionCard(art, depth)
         card.set_selected(str(art.get("id")) == self.current_id)
+        card.set_unread(str(art.get("id")) in UNREAD)
+        card.set_multi_mode(self._selecting)                # 重建回放多选模式
+        card.set_checked(str(art.get("id")) in self._multi)
+        card.installEventFilter(self)   # 按下/涂抹/长按统一在 pane 接管
         card.opened.connect(self._select_session)
         card.renameRequested.connect(self._rename_session)
         card.deleteRequested.connect(self._delete_session)
@@ -1017,6 +1156,22 @@ class RecordsPane(QWidget):
         self._session_cards.append(card)
 
     def _render_tree(self):
+        self._render_tree_rows()
+        if not self._selecting:
+            return
+        # 选中集按现有会话裁剪（删掉的/不在库里的不再算）；裁空即退多选
+        # （mobile renderList 同款；按全量 rows 裁 → 跨筛选/科目保选中）
+        valid = {str(r.get("id")) for r in self.rows}
+        self._multi &= valid
+        if not self._multi:
+            self._set_selecting(False)
+            return
+        for card in self._session_cards:
+            card.set_multi_mode(True)
+            card.set_checked(card._id in self._multi)
+        self._sync_sel_chrome()
+
+    def _render_tree_rows(self):
         """左栏列表：科目行（展开时挂会话）+ 未分类会话殿后；收藏视图平铺。"""
         self._clear_box(self._tree_box)
         self._session_cards = []
@@ -1199,6 +1354,7 @@ class RecordsPane(QWidget):
 
     # ---------- 交互：分段 / 检索 / 展开 ----------
     def _set_seg(self, fav: bool):
+        self._set_selecting(False)   # 换筛选先退多选（选中集要跟着视图走）
         self.fav = 1 if fav else 0
         for btn, on in ((self.seg_all, not fav), (self.seg_fav, fav)):
             bg = "#ffffff" if on else "transparent"
@@ -1209,6 +1365,8 @@ class RecordsPane(QWidget):
         self._render_tree()
 
     def _do_search(self):
+        if self.keyword != self.search.text().strip():
+            self._set_selecting(False)   # 换检索词先退多选（同换筛选）
         self.keyword = self.search.text().strip()
         self._render_tree()
 
@@ -1226,11 +1384,273 @@ class RecordsPane(QWidget):
         if row is None:
             return
         self.current_id = art_id
+        UNREAD.discard(art_id)   # 看过了：未读红点消掉
         self._scroll_bottom_once = False   # 手动点开：照旧从顶部读
         for card in self._session_cards:
             card.set_selected(card._id == art_id)
+            if card._id == art_id:
+                card.set_unread(False)
         self._render_detail(row)
         self._update_hint()
+
+    def mark_unread(self, art_id: str):
+        """后台回合落库完成：右栏正看这场就不点（算已读），否则记未读红点。"""
+        art_id = str(art_id)
+        if not art_id or art_id == self.current_id:
+            return
+        UNREAD.add(art_id)
+        for card in self._session_cards:
+            if card._id == art_id:
+                card.set_unread(True)
+
+    # ---------- 涂抹多选（2026-10-05 照 mobile record.js：长按进、单选框起笔） ----------
+    def eventFilter(self, obj, ev):
+        # 会话行的按下/移动/收笔全在这里接管（★✎⇄× 是独立子 widget，不经这条路）
+        if isinstance(obj, SessionCard):
+            t = ev.type()
+            if t == QEvent.MouseButtonPress:
+                return self._on_card_press(obj, ev)
+            if t == QEvent.MouseMove:
+                return self._on_card_move(obj, ev)
+            if t == QEvent.MouseButtonRelease:
+                return self._on_card_release(obj, ev)
+        return super().eventFilter(obj, ev)
+
+    def _on_card_press(self, card, ev) -> bool:
+        if ev.button() != Qt.LeftButton:
+            return False                      # 右键等放行（本页无右键菜单）
+        if card not in self._session_cards:
+            return False                      # 渲染重建中的残留：放行
+        gpos = ev.globalPosition().toPoint()
+        self._press_card = card
+        self._press_pos = gpos
+        self._press_moved = False
+        self._hold_fired = False
+        if self._selecting:
+            ck_rect = QRect(card.mapToGlobal(card.ck.pos()), card.ck.size())
+            if ck_rect.contains(gpos):
+                self._begin_paint(card)       # 涂抹起笔（只认单选框）
+                return True
+            return True                       # 模式里卡片其他区域：只等点选收笔
+        self._hold_timer.start()              # 长按 500ms 进多选
+        return True
+
+    def _on_card_move(self, card, ev) -> bool:
+        if self._paint is not None:
+            self._paint_move(ev.globalPosition().toPoint())
+            return True
+        if self._press_card is not None and not self._hold_fired:
+            gpos = ev.globalPosition().toPoint()
+            if (gpos - self._press_pos).manhattanLength() > 10:  # SLOP 同款
+                self._hold_timer.stop()       # 动了 = 手抖/挪位置，长按作废
+                self._press_moved = True
+            return True
+        return False
+
+    def _on_card_release(self, card, ev) -> bool:
+        if ev.button() != Qt.LeftButton:
+            return False
+        if self._paint is not None:
+            self._paint_end()
+            return True
+        pressed = self._press_card
+        self._press_card = None
+        self._hold_timer.stop()
+        if pressed is None:
+            return False
+        if self._hold_fired:
+            self._hold_fired = False
+            return True    # 长按刚进模式并勾上这张：收笔不许再翻选/打开
+        if self._press_moved:
+            self._press_moved = False
+            return True
+        if self._selecting:
+            self._toggle_multi(pressed)       # 模式里点卡片 = 勾选
+        else:
+            pressed.opened.emit(pressed._id)  # 平时点开（等收笔再开，长按才判得出来）
+        return True
+
+    def _hold_timeout(self):
+        card = self._press_card
+        if card is None or card not in self._session_cards:
+            return
+        self._hold_fired = True
+        self._set_selecting(True)
+        self._set_checked(card, True)         # 长按那张卡直接勾上（mobile 同款）
+
+    # ---- 涂抹本体（语义照 record.js：起笔卡决定本笔方向；折返=换向+新段） ----
+    def _begin_paint(self, card):
+        idx = self._session_cards.index(card)
+        self._paint = {"card": card, "seg": idx, "prev": idx, "dx": 0,
+                       "dir": card._id not in self._multi, "moved": False}
+        self._press_card = None               # 涂抹接管：不再算长按/点选
+        card.grabMouse()
+
+    def _card_at(self, gpos) -> SessionCard | None:
+        for c in reversed(self._session_cards):
+            if c.isVisible() and c.frameGeometry().contains(gpos):
+                return c
+        return None
+
+    def _paint_move(self, gpos):
+        p = self._paint
+        if p is None:
+            return
+        target = self._card_at(gpos)
+        if target is None or target not in self._session_cards:
+            return
+        idx = self._session_cards.index(target)
+        if idx == p["prev"]:
+            return
+        d = 1 if idx > p["prev"] else -1
+        if p["dx"] and d != p["dx"]:
+            p["dir"] = not p["dir"]           # 中途折返：方向翻转
+            p["seg"] = p["prev"]              # 新段从拐点起算（mobile 同款）
+        p["dx"] = d
+        p["prev"] = idx
+        p["moved"] = True
+        self._paint_range(idx)
+
+    def _paint_range(self, to_idx):
+        p = self._paint
+        a, b = sorted((p["seg"], to_idx))
+        for i in range(a, b + 1):
+            if 0 <= i < len(self._session_cards):
+                self._set_checked(self._session_cards[i], p["dir"])
+
+    def _paint_end(self):
+        p, self._paint = self._paint, None
+        if p is None:
+            return
+        p["card"].releaseMouse()
+        if not p["moved"] and 0 <= p["seg"] < len(self._session_cards):
+            # 单选框上的轻点（没动）：就地翻选（mobile endStroke 同款）
+            self._toggle_multi(self._session_cards[p["seg"]])
+
+    # ---- 模式与勾选状态 ----
+    def _set_selecting(self, on: bool):
+        if self._selecting == bool(on):
+            return
+        self._selecting = bool(on)
+        if not self._selecting:
+            self._multi.clear()
+            self._hold_timer.stop()
+        self._batch_bar.setVisible(self._selecting)
+        for card in self._session_cards:
+            card.set_multi_mode(self._selecting)
+            card.set_checked(card._id in self._multi)
+        self._sync_sel_chrome()
+
+    def _set_checked(self, card, on: bool):
+        sid = card._id
+        if bool(on) == (sid in self._multi):
+            return
+        if on:
+            self._multi.add(sid)
+        else:
+            self._multi.discard(sid)
+        card.set_checked(bool(on))
+        self._sync_sel_chrome()
+
+    def _toggle_multi(self, card):
+        self._set_checked(card, card._id not in self._multi)
+
+    def _sync_sel_chrome(self):
+        n = len(self._multi)
+        self._sel_label.setText(f"已选 {n} 项")
+        for b in (self.batch_fav, self.batch_move, self.batch_del):
+            b.setEnabled(n > 0)
+
+    # ---------- 批量操作（多选底栏；语义照 mobile bFav/bMove/bDel） ----------
+    def _selected_rows(self) -> list[dict]:
+        return [r for r in self.rows if str(r.get("id")) in self._multi]
+
+    def _batch_fav(self):
+        """全已收藏 → 这次统一取消；否则把没收藏的都收上。"""
+        rows = self._selected_rows()
+        if not rows:
+            return
+        to_fav = any(not r.get("fav") for r in rows)
+        n = 0
+        for r in rows:
+            if bool(r.get("fav")) == to_fav:
+                continue                      # 已是目标状态，别再翻
+            try:
+                self.api.update_article(str(r.get("id")),
+                                        fav=1 if to_fav else 0)
+            except (ApiError, NetworkError) as e:
+                self._err(f"收藏失败：{e}")
+                continue
+            r["fav"] = 1 if to_fav else 0
+            n += 1
+        if not n:
+            InfoBar.warning("操作失败", "收藏没有更新", parent=self,
+                            duration=2200, position=InfoBarPosition.TOP)
+            return
+        self._render_tree()
+        InfoBar.success(f"{'已收藏' if to_fav else '已取消收藏'} {n} 条",
+                        "会话列表里会标出这颗星" if to_fav else "已取消标记",
+                        parent=self, duration=2200,
+                        position=InfoBarPosition.TOP)
+
+    def _batch_move(self):
+        rows = self._selected_rows()
+        if not rows:
+            return
+        if not self._cats:
+            InfoBar.warning("还没有科目", "先点「＋ 新建科目」，再把会话移进去",
+                            parent=self, duration=2600,
+                            position=InfoBarPosition.TOP)
+            return
+        homes = {str(r.get("categoryId") or "") for r in rows}
+        mixed = len(homes) > 1                # 归属不一致：模态不预选任何行
+        cur = next(iter(homes)) if len(homes) == 1 else ""
+        target = _MoveDialog.get_target(self._cats, cur, self.window(),
+                                        mixed=mixed)
+        if target is None:
+            return
+        n = 0
+        for r in rows:
+            try:
+                self.api.update_article(str(r.get("id")), category_id=target)
+            except (ApiError, NetworkError) as e:
+                self._err(f"移动失败：{e}")
+                continue
+            r["categoryId"] = target
+            n += 1
+        self.load_categories()
+        self._render_tree()
+        if n:
+            InfoBar.success(f"已移入 {n} 条", "归属科目已更新", parent=self,
+                            duration=2200, position=InfoBarPosition.TOP)
+
+    def _batch_delete(self):
+        rows = self._selected_rows()
+        n = len(rows)
+        if not n:
+            return
+        box = MessageBox(
+            "删除选中的会话？",
+            f"确定删除选中的 {n} 条会话吗？截图、回答与核实记录会一并删除，"
+            "不可恢复。", self.window())
+        if not box.exec():
+            return
+        done = 0
+        for r in rows:
+            aid = str(r.get("id"))
+            try:
+                self.api.delete_article(aid)
+                purge_article_files(r, self.api)   # 删会话连带删题图
+                done += 1
+            except (ApiError, NetworkError) as e:
+                self._err(f"删除失败：{e}")
+            UNREAD.discard(aid)
+        self._set_selecting(False)            # 删空/删完都退多选（mobile 同款）
+        self.reload()
+        if done:
+            InfoBar.success(f"已删除 {done} 条", "会话与题图已清掉",
+                            parent=self, duration=2200,
+                            position=InfoBarPosition.TOP)
 
     def _rename_session(self, art_id: str, title: str):
         new = _InputDialog.get_text("重命名会话", title, self.window())

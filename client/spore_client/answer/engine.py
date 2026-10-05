@@ -2,7 +2,9 @@
 
 事件族与 MV3 同名（status/answer-start/answer-delta/think-delta/chat-start/
 chat-delta/verify-delta/tool/title/error/turn-end），AnswerWindow 只认这套。
-线程模型：回合跑在后台线程（引擎自持），emit 回调由调用方负责切回 UI 线程
+线程模型：**并行回合**（2026-10-05）——每回合一个后台 worker、一个中止位、
+一个会话对象；事件带 sid（thread-local 打标），面板只认当前会话、
+turn-end 按事件会话各自落库。emit 回调由调用方负责切回 UI 线程
 （Qt 侧用 signal，跨线程 emit 自动队列化）。
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -71,40 +74,56 @@ def _parse_tool_args(raw: str) -> dict:
 class AgentEngine:
     def __init__(self, settings: LlmSettings, emit: Emit):
         self.settings = settings
-        self._emit = emit
+        self._emit_cb = emit
         self.session = Session()
-        self._abort = threading.Event()
-        self._worker: threading.Thread | None = None
+        # 并行回合（2026-10-05 用户实测「第一道没在后台完成」后的改造）：
+        # 每回合自己的 worker / 中止位 / 会话对象，事件带 sid ——
+        # 面板只认当前会话的事件，turn-end 按事件会话各自落库，绝不串线。
+        self._sessions: dict[str, Session] = {}
+        self._workers: dict[str, threading.Thread] = {}
+        self._aborts: dict[str, threading.Event] = {}
+        self._local = threading.local()
         set_search_proxy(settings.proxy)
+
+    def _emit(self, ev: dict):
+        """事件出口：worker 线程里补 sid（thread-local），消费方按会话过滤。"""
+        sid = getattr(self._local, "sid", None)
+        if sid:
+            ev.setdefault("sid", sid)
+        self._emit_cb(ev)
 
     # ---------- 对外入口 ----------
     def new_capture_turn(self, image_path: str, supplement: str = "") -> Session:
-        """截屏作答入口：新会话 + 用户消息（带图），后台开跑。"""
-        self.session = Session(image_path=image_path)
-        self.session.messages.append(
+        """截屏作答入口：新会话 + 用户消息（带图），后台开跑。
+
+        **不打断正在跑的别的回合**（并行回答，MV3 并发回合同语义）：
+        旧会话的 worker 持有自己的 sess 引用继续跑完，turn-end 各自落库。
+        """
+        sess = Session(image_path=image_path)
+        sess.messages.append(
             Msg(role="user", kind="answer", text=supplement,
                 hasImage=True, imagePath=image_path))
-        self._start(self._run_turn)
-        return self.session
+        self.session = sess
+        self._spawn(sess, self._run_turn)
+        return sess
 
     def send_followup(self, text: str) -> bool:
         """追问：复用当前会话（同一回合语义与 MV3 一致）。"""
         if self.is_busy():
             return False
         self.session.messages.append(Msg(role="user", kind="chat", text=text))
-        self._start(self._run_turn)
+        self._spawn(self.session, self._run_turn)
         return True
 
     def load_session(self, sess: Session) -> bool:
         """收编一条外部（历史）会话，下一条追问即在其上接续（§8-2）。
 
-        只置会话、清中止位，**不新建 worker 线程**——发消息时才开跑；
-        正在跑别的回合时不换（换会把两场对话串到一起），返回 False 由
-        调用方保持只读。turn-end 落库侧看 sess.backend_id 决定 POST/PUT。
+        只置会话，**不新建 worker 线程**——发消息时才开跑；
+        当前会话正忙时不换（换会把面板视图切走，当前回合的流式没人看），
+        返回 False 由调用方保持只读。turn-end 落库侧看 sess.backend_id 决定 POST/PUT。
         """
         if self.is_busy():
             return False
-        self._abort.clear()
         self.session = sess
         return True
 
@@ -112,40 +131,72 @@ class AgentEngine:
         """手动核实（阶段B 单独跑）；没有可核实的回答返回 False。"""
         if self.is_busy() or self.session.last_answer is None:
             return False
-        self._start(self._run_verify_only)
+        self._spawn(self.session, self._run_verify_only)
         return True
 
     def is_busy(self) -> bool:
-        return self._worker is not None and self._worker.is_alive()
+        """**当前会话**的回合在跑（并行回合后不再等于「任何回合在跑」）。"""
+        t = self._workers.get(self.session.id)
+        return t is not None and t.is_alive()
 
     def cancel(self):
-        self._abort.set()
+        """中止**当前会话**的回合（后台别的会话照跑）。"""
+        ev = self._aborts.get(self.session.id)
+        if ev is not None:
+            ev.set()
 
-    def _start(self, fn):
-        self._abort.clear()
-        self._worker = threading.Thread(target=fn, daemon=True, name="spore-agent")
-        self._worker.start()
+    def session_by_id(self, sid: str | None) -> Session | None:
+        """事件 sid → 会话（turn-end 落库 / 记录页直播路由用）。"""
+        return self._sessions.get(sid) if sid else None
+
+    def wait_idle(self, timeout: float = 10.0) -> bool:
+        """等所有回合线程收尾（测试/收尾用）；超时返回 False。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            alive = [t for t in self._workers.values() if t.is_alive()]
+            if not alive:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            for t in alive:
+                t.join(0.5)
+
+    def _spawn(self, sess: Session, fn):
+        ev = threading.Event()
+        self._sessions[sess.id] = sess
+        self._aborts[sess.id] = ev
+
+        def run():
+            self._local.sid = sess.id
+            try:
+                fn(sess, ev)
+            finally:
+                self._local.sid = None
+                self._workers.pop(sess.id, None)
+
+        t = threading.Thread(target=run, daemon=True, name="spore-agent")
+        self._workers[sess.id] = t
+        t.start()
 
     # ---------- 主循环（agent.js runTurn 镜像） ----------
-    def _run_turn(self):
-        sess = self.session
+    def _run_turn(self, sess: Session, ev: threading.Event):
         last = sess.messages[-1]
         if last.role != "user":
-            self._fail(ValueError("no pending user message"), -1)
+            self._fail(sess, ValueError("no pending user message"), -1)
             return
         idx = len(sess.messages) - 1  # 占位：答案消息入列后会重算
         try:
             if not last.hasImage:
-                self._run_chat(sess, last)
+                self._run_chat(sess, last, ev)
             else:
-                self._run_capture(sess, last)
+                self._run_capture(sess, last, ev)
         except (Aborted, AbortedError) as e:
             self._finish(sess, idx, aborted=True, err=e)
         except Exception as e:  # noqa: BLE001 —— 回合错误必须全部收敛到 error 事件
-            self._fail(e, idx)
+            self._fail(sess, e, idx)
 
     # ------------------------------------------------ 截图提问：两阶段
-    def _run_capture(self, sess: Session, user_msg: Msg):
+    def _run_capture(self, sess: Session, user_msg: Msg, ev: threading.Event):
         self._set_status(sess, "answering", "读题中…")
         image = image_data_url(sess.image_path or user_msg.imagePath)
         extra = f"\n\n用户补充：{user_msg.text}" if user_msg.text else ""
@@ -179,7 +230,7 @@ class AgentEngine:
 
         LOG.info("worker: phaseA stream_chat begin")
         res_a = stream_chat(messages=messages, no_think=self.settings.fast_no_think,
-                            on_delta=on_delta, abort=self._abort.is_set, **api)
+                            on_delta=on_delta, abort=ev.is_set, **api)
         LOG.info("worker: phaseA stream_chat done (%d chars)",
                  len(res_a.get("content", "")))
         raw_a = res_a.get("content", "")
@@ -204,7 +255,7 @@ class AgentEngine:
             self._finish(sess, idx)
             return
         if self.settings.auto_verify:
-            self._verify_phase(sess, answer, idx, image, extra)
+            self._verify_phase(sess, answer, idx, image, extra, ev)
         else:
             answer.verifyPending = True
             answer.verifyNote = "已关闭自动核实 · 点「核实一下」开始"
@@ -213,7 +264,8 @@ class AgentEngine:
         self._finish(sess, idx)
 
     # ------------------------------------------------ 阶段B：联网核实（工具循环）
-    def _verify_phase(self, sess, answer: Msg, idx, image, extra):
+    def _verify_phase(self, sess, answer: Msg, idx, image, extra,
+                      ev: threading.Event):
         rounds = max(0, self.settings.max_tool_rounds)
         if rounds <= 0:
             return
@@ -230,10 +282,10 @@ class AgentEngine:
         api = self._api_kwargs()
         verify = None
         for _round in range(rounds + 1):
-            self._check_abort()
+            self._check_abort(ev)
             res = stream_chat(messages=messages, tools=TOOLS, no_think=False,
                               on_delta=self._verify_delta_cb(answer, idx),
-                              abort=self._abort.is_set, **api)
+                              abort=ev.is_set, **api)
             if not res.get("tool_calls"):
                 verify = parse_phase_b(res.get("content", ""))
                 break
@@ -249,14 +301,14 @@ class AgentEngine:
                             "name": tc["name"], "brief": brief})
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": dispatch(tc["name"], args,
-                                                     self._abort.is_set)})
-        if verify is None and not self._abort.is_set():
+                                                     ev.is_set)})
+        if verify is None and not ev.is_set():
             # 检索轮次用光：收走工具，强制输出三行结论
             fin = stream_chat(
                 messages=[*messages, {"role": "user", "content": VERIFY_FORCE_FINAL}],
                 max_tokens=300, no_think=False,
                 on_delta=self._verify_delta_cb(answer, idx),
-                abort=self._abort.is_set, **api)
+                abort=ev.is_set, **api)
             verify = parse_phase_b(fin.get("content", ""))
         if verify is None:
             verify = {"verdict": "", "note": "核实失败（网络或模型异常），可点 ↻ 重试。",
@@ -276,7 +328,7 @@ class AgentEngine:
                     "done": True})
 
     # ------------------------------------------------ 追问（纯文本 + 工具循环）
-    def _run_chat(self, sess: Session, user_msg: Msg):
+    def _run_chat(self, sess: Session, user_msg: Msg, ev: threading.Event):
         self._set_status(sess, "answering", "回答中…")
         msg = Msg(role="assistant", kind="chat")
         sess.messages.append(msg)
@@ -287,7 +339,7 @@ class AgentEngine:
         # 追问轮次下限 1：设置关的是「自动核实」，不是「永远不许查」
         rounds = max(1, self.settings.max_tool_rounds)
         messages = [{"role": "system", "content": SYSTEM}]
-        messages += self._history()
+        messages += self._history(sess)
         api = self._api_kwargs()
         think_base = ""
 
@@ -306,9 +358,9 @@ class AgentEngine:
 
         last = None
         for _ in range(rounds):
-            self._check_abort()
+            self._check_abort(ev)
             last = stream_chat(messages=messages, tools=TOOLS,
-                               on_delta=on_delta, abort=self._abort.is_set, **api)
+                               on_delta=on_delta, abort=ev.is_set, **api)
             if not last.get("tool_calls"):
                 break
             self._set_status(sess, "searching", "检索中…")
@@ -323,22 +375,21 @@ class AgentEngine:
                             "name": tc["name"], "brief": brief})
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                                  "content": dispatch(tc["name"], args,
-                                                     self._abort.is_set)})
+                                                     ev.is_set)})
             think_base = msg.think
             self._set_status(sess, "answering", "")
             last = None  # 这一轮只有工具调用，正文等下一轮
         if last is None:
-            self._check_abort()
+            self._check_abort(ev)
             last = stream_chat(
                 messages=[*messages, {"role": "user", "content": CHAT_FORCE_FINAL}],
-                on_delta=on_delta, abort=self._abort.is_set, **api)
+                on_delta=on_delta, abort=ev.is_set, **api)
         if not msg.text and last.get("content"):
             msg.text = last["content"]
         self._finish(sess, idx)
 
     # ------------------------------------------------ 手动核实
-    def _run_verify_only(self):
-        sess = self.session
+    def _run_verify_only(self, sess: Session, ev: threading.Event):
         answer = sess.last_answer
         if answer is None:
             return
@@ -349,12 +400,12 @@ class AgentEngine:
         try:
             answer.verifyRan = False
             self._set_status(sess, "verifying", "核实中…")
-            self._verify_phase(sess, answer, idx, image, extra)
+            self._verify_phase(sess, answer, idx, image, extra, ev)
             self._finish(sess, idx)
         except (Aborted, AbortedError) as e:
             self._finish(sess, idx, aborted=True, err=e)
         except Exception as e:  # noqa: BLE001
-            self._fail(e, idx)
+            self._fail(sess, e, idx)
 
     # ---------- 收尾 ----------
     def _finish(self, sess: Session, idx: int, aborted=False, err=None, error=False):
@@ -369,9 +420,8 @@ class AgentEngine:
             ev["error"] = True
         self._emit(ev)
 
-    def _fail(self, e: Exception, idx: int):
+    def _fail(self, sess: Session, e: Exception, idx: int):
         aborted = isinstance(e, (Aborted, AbortedError))
-        sess = self.session
         if not sess.title or sess.title == "新会话":
             self._ensure_named(sess)
         msg = str(getattr(e, "message", None) or e)[:200]
@@ -379,8 +429,8 @@ class AgentEngine:
             self._emit({"type": "error", "idx": idx, "message": msg})
         self._finish(sess, idx, aborted=aborted, error=not aborted)
 
-    def _check_abort(self):
-        if self._abort.is_set():
+    def _check_abort(self, ev: threading.Event):
+        if ev.is_set():
             raise Aborted()
 
     def _set_status(self, sess, status, text):
@@ -415,17 +465,17 @@ class AgentEngine:
         self._emit({"type": "title", "title": sess.title})
 
     # ---------- 上下文：只保留最近一张图（agent.js historyMessages 语义） ----------
-    def _history(self) -> list[dict]:
+    def _history(self, sess: Session) -> list[dict]:
         msgs: list[dict] = []
         img_idx = -1
-        for i, m in enumerate(self.session.messages):
+        for i, m in enumerate(sess.messages):
             if m.role == "user" and m.hasImage:
                 img_idx = i
         url = image_data_url(
-            self.session.messages[img_idx].imagePath) if img_idx >= 0 else ""
+            sess.messages[img_idx].imagePath) if img_idx >= 0 else ""
         limit = self.settings.history_limit
-        start = max(0, len(self.session.messages) - limit)
-        for i, m in enumerate(self.session.messages):
+        start = max(0, len(sess.messages) - limit)
+        for i, m in enumerate(sess.messages):
             if i < start:
                 continue
             if m.role == "user":

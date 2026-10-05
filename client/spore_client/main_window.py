@@ -359,27 +359,31 @@ class MainWindow(FluentWindow):
             extra = (ev.get("status") or ev.get("brief") or ev.get("title")
                      or "")
             LOG.info("engine event %s %s", t, extra)
-        self.answer_window.on_event(ev)
-        self.records.on_engine_event(self.engine.session, ev)  # 记录页直播（§ 反馈）
+        sess = self.engine.session_by_id(ev.get("sid")) or self.engine.session
+        self.answer_window.on_event(ev)  # 面板内部按 sid 过滤（并行回合）
+        self.records.on_engine_event(sess, ev)  # 记录页直播（§ 反馈）
         if t == "turn-end":
             LOG.info("turn-end in %.1fs deltas=%s",
                      time.monotonic() - self._t_turn, self._delta_counts)
             self._delta_counts = {}
             if not ev.get("error") and not ev.get("aborted"):
-                self._persist_turn()
+                self._persist_turn(sess)
 
-    def _persist_turn(self):
-        """回合结束落库：新回合 POST /articles，接续历史 PUT /articles/{id}。"""
+    def _persist_turn(self, sess):
+        """回合结束落库：新回合 POST /articles，接续历史 PUT /articles/{id}。
+
+        sess 是**事件那场**的会话（并行回合后不再等于 engine.session）。
+        """
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._persist_turn_sync)
+        QTimer.singleShot(0, lambda: self._persist_turn_sync(sess))
 
-    def _persist_turn_sync(self):
-        sess = self.engine.session
+    def _persist_turn_sync(self, sess):
         if not any(m.role == "assistant" for m in sess.messages):
             return
         t0 = time.monotonic()
         try:
             messages = [m.to_dict() for m in sess.messages]
+            put = bool(sess.backend_id)
             if sess.backend_id:
                 # 历史接续回合：后端 ArticleReq.messages 非 null 即重写正文（§8-2）；
                 # 接续会话不带新题图，题图只在新回合 POST 后上推
@@ -394,19 +398,32 @@ class MainWindow(FluentWindow):
                     "messages": messages,
                 })
                 art_id = art.get("id") if isinstance(art, dict) else None
+                # 回写 backend_id：否则同一会话的下一个追问回合会再次 POST，
+                # 造出「两个同名会话：一个第一次对话、一个两次一起」（2026-10-05 实测 bug）
+                sess.backend_id = str(art_id or "")
                 if art_id and sess.image_path:
                     self.api.push_attachment(art_id, sess.image_path)
-            if art_id:  # 落库后才有 id：面板 ★ 才知道收藏对象
-                self.answer_window.set_current_article(
-                    art_id, bool(art.get("fav")) if isinstance(art, dict)
-                    else False)
+            if art_id:
+                self._unread_account(sess, str(art_id))
+                if self.engine.session is sess:
+                    # 落库后才有 id：面板 ★ 才知道收藏对象；
+                    # 只认面板正看着的那场——后台会话落库不许改走面板的 ★
+                    self.answer_window.set_current_article(
+                        art_id, bool(art.get("fav")) if isinstance(art, dict)
+                        else False)
             LOG.info("persisted turn id=%s put=%s in %.0fms", art_id,
-                     bool(sess.backend_id), (time.monotonic() - t0) * 1000)
+                     put, (time.monotonic() - t0) * 1000)
             self.records.reload()  # 记录页随后看到接续落库后的新消息/状态
         except Exception as e:  # noqa: BLE001 —— 落库失败提示即可，不掀桌
             LOG.error("persist failed in %.0fms: %s",
                       (time.monotonic() - t0) * 1000, e)
             self._notify("warning", "落库失败", str(e), 5000)
+
+    def _unread_account(self, sess, art_id: str):
+        """后台完成的会话点未读红点（MV3 unread 同语义）：
+        面板已切到别的会话（engine.session 不是它）才记；正在看的那场算已读。"""
+        if self.engine.session is not sess:
+            self.records.mark_unread(art_id)
 
     # ---------- 托盘/单例唤醒（关闭 = 收起，不是退出） ----------
     def _show_main(self):

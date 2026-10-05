@@ -15,8 +15,9 @@
   才能拿到 border-radius / 悬停色；正文走 markdown → 富文本。
 - 流式文本 200ms 节流重渲（04 §四：别每个 delta 重排）。
 
-Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；新截屏落在选区附近
-（04 §四，越界钳回屏内），Esc 隐藏。
+Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；新截屏的出生位 =
+设置「回答面板位置固定」开着（默认）时记住的上次位置，关掉才回到
+选区/鼠标附近（2026-10-05 用户点名）；Esc 隐藏。
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import re
 import markdown
 from PySide6.QtCore import (
     QEasingCurve,
+    QPoint,
     Qt,
     QThread,
     QTimer,
@@ -57,7 +59,9 @@ from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .log import get_logger
-from .records import _InputDialog, article_shot, purge_article_files
+from .records import UNREAD, _InputDialog, article_shot, purge_article_files
+from .settings_store import read as read_ui_settings
+from .settings_store import write as write_ui_settings
 
 LOG = get_logger()
 
@@ -184,10 +188,26 @@ class _SessionsTask(QThread):
         self.api = api
 
     def run(self):
+        # 全量翻页（2026-10-05 用户点名「不要限制」）：旧实现 page=1/size=60
+        # 只拿前 60 条。按 200/页（后端 size 上限）翻到短页为止；
+        # id 集重复 = 后端没分页，立刻收手，别在坏后端上无限翻。
         try:
-            data = self.api.articles(page=1, size=60)
-            rows = data.get("list", []) if isinstance(data, dict) else []
-            self.ok.emit(list(rows))
+            rows: list = []
+            seen: set[str] = set()
+            page = 1
+            while True:
+                data = self.api.articles(page=page, size=200)
+                batch = data.get("list", []) if isinstance(data, dict) else []
+                ids = {str(r.get("id") or f"{page}-{i}")
+                       for i, r in enumerate(batch)}
+                if ids and ids <= seen:
+                    break
+                seen |= ids
+                rows.extend(batch)
+                if len(batch) < 200:
+                    break
+                page += 1
+            self.ok.emit(rows)
         except (ApiError, NetworkError) as e:
             self.failed.emit(str(e))
 
@@ -251,6 +271,14 @@ class _SessionRow(QFrame):
             "QPushButton:hover{background:#fdecef; color:#d02747;}")
         h.addWidget(self.star)
         h.addLayout(col, 1)
+        # 未读红点（MV3 review.html .d 同款 8px 粉点）：后台完成的会话标记。
+        # Qt 样式表不认 box-shadow（写了只刷警告），圆点靠底色就够醒目
+        self.dot = QLabel()
+        self.dot.setFixedSize(8, 8)
+        self.dot.setStyleSheet(
+            "QLabel{background:#ec4899; border-radius:4px;}")
+        self.dot.setVisible(False)
+        h.addWidget(self.dot)
         h.addWidget(self.rename_btn)
         h.addWidget(self.del_btn)
         self._hover = False
@@ -258,6 +286,9 @@ class _SessionRow(QFrame):
 
     def set_fav(self, on: bool):
         self.star.setStyleSheet(_star_style(on))
+
+    def set_unread(self, on: bool):
+        self.dot.setVisible(bool(on))
 
     def enterEvent(self, ev):
         self._hover = True
@@ -292,6 +323,7 @@ class AnswerWindow(QWidget):
         self._api = None                      # attach_api() 注入，未注入则安全跳过
         self._current_article_id: str | None = None
         self._current_fav = False
+        self._sess_id: str | None = None      # 面板正在看的会话 id（并行事件过滤用）
         self._readonly = False                # 正在看历史会话（追问禁用）
         self._blocks: list[dict] = []   # 追加式消息块（widget + 数据都在里面）
         self._cur: dict | None = None   # 正在流式的块
@@ -428,20 +460,54 @@ class AnswerWindow(QWidget):
             self.move(ev.globalPosition().toPoint() - self._drag_pos)
 
     def mouseReleaseEvent(self, ev):
-        self._drag_pos = None
+        if self._drag_pos is not None:
+            self._drag_pos = None
+            self._remember_pos()   # 拖过就记住：位置固定开着时下次从这出生
 
     # ---------- 对外 ----------
     def attach_engine(self, engine: AgentEngine):
         """引擎事件 → UI（引擎在后台线程 emit，主窗 Signal 队列回主线程）。"""
         self._engine = engine
 
+    # ---------- 出生位置：设置「回答面板位置固定」（2026-10-05 用户点名） ----------
+    @staticmethod
+    def _fixed_pos() -> tuple[int, int] | None:
+        """固定开关开着（默认开）且记住的坐标仍落在某块屏上 → 用它出生。"""
+        d = read_ui_settings()
+        if not d.get("panelFixed", True):
+            return None                  # 关掉 → 旧行为：出现在截选/鼠标附近
+        pos = d.get("panelPos")
+        if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
+            return None                  # 还没拖过 → 本次 place_near 后记住
+        try:
+            x, y = int(pos[0]), int(pos[1])
+        except (TypeError, ValueError):
+            return None
+        if QApplication.screenAt(QPoint(x, y)) is None:
+            return None                  # 换屏/改缩放了：坐标失效，回落选区附近
+        return x, y
+
+    def _remember_pos(self):
+        """记住面板左上角（拖拽收笔即存；下次固定出生用）。写失败静默。"""
+        try:
+            d = read_ui_settings()
+            d["panelPos"] = [self.x(), self.y()]
+            write_ui_settings(d)
+        except OSError:
+            pass
+
     def new_turn(self, image_path: str, supplement: str = "",
                  sel: tuple[float, float, float, float] | None = None):
         self._clear()
-        if sel is not None:  # 04 §四：出现在选区附近，越界钳回屏内
+        fixed = self._fixed_pos()
+        if fixed is not None:
+            self.move(*fixed)
+        elif sel is not None:  # 04 §四：出现在选区附近，越界钳回屏内
             screen = QApplication.instance().primaryScreen().size()
             self.move(*place_near(sel, self.width(), self.height(),
                                   screen.width(), screen.height()))
+            if read_ui_settings().get("panelFixed", True):
+                self._remember_pos()   # 固定开着但没记住 → 记下这次的出生位
         self._show_shot(image_path)
         if supplement:
             self._append_user(supplement)  # 截屏补充也画成用户气泡
@@ -450,10 +516,18 @@ class AnswerWindow(QWidget):
         LOG.info("panel shown at (%d,%d) size=%dx%d sel=%s",
                  self.x(), self.y(), self.width(), self.height(), sel)
         if self._engine is not None:
-            self._engine.new_capture_turn(image_path, supplement)
+            self._sess_id = self._engine.new_capture_turn(
+                image_path, supplement).id
 
     def on_event(self, ev: dict):
-        """统一事件入口（主窗 engineEvent 队列化后调）。"""
+        """统一事件入口（主窗 engineEvent 队列化后调）。
+
+        并行回合（2026-10-05）：带 sid 的事件只认面板正看着的那场——
+        别的会话在后台跑完不许灌进当前视图（turn-end 等同过滤）。
+        """
+        sid = ev.get("sid")
+        if sid and self._sess_id and sid != self._sess_id:
+            return
         t = ev.get("type")
         if t == "think-delta":
             return  # reason 内容整个应用不展示（用户拍板）；引擎层照跑
@@ -965,6 +1039,7 @@ class AnswerWindow(QWidget):
         avail = max(120, self.width() - 24 - 16 - 110)
         for art in rows:
             row = _SessionRow(art, avail)
+            row.set_unread(str(art.get("id") or "") in UNREAD)
             row.opened.connect(self._open_from_list)
             row.renameRequested.connect(self._rename_row)
             row.deleteRequested.connect(self._delete_row)
@@ -1035,6 +1110,7 @@ class AnswerWindow(QWidget):
         self._load_sessions()
 
     def _open_from_list(self, art: dict):
+        UNREAD.discard(str(art.get("id") or ""))  # 看过了：未读红点消掉
         self._pop.setVisible(False)
         self.load_history(art)
 
@@ -1056,9 +1132,10 @@ class AnswerWindow(QWidget):
         for m in msgs:
             self._add_history_msg(m)
         adopted = False
+        sess = session_from_article(article, msgs)
+        self._sess_id = sess.id   # 面板正看这场：并行回合只认它的事件
         if self._engine is not None:
-            adopted = self._engine.load_session(
-                session_from_article(article, msgs))
+            adopted = self._engine.load_session(sess)
         self._set_readonly(not adopted)
         self.show_fade()
         LOG.info("history loaded id=%s msgs=%d fav=%s adopted=%s",

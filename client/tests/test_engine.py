@@ -43,8 +43,7 @@ def _run(engine, monkeypatch, script):
 
     engine._emit = emit
     engine.new_capture_turn("fake.jpg")
-    engine._worker.join(timeout=10)
-    assert not engine._worker.is_alive(), "回合线程 10s 未收尾（死循环？）"
+    assert engine.wait_idle(10), "回合线程 10s 未收尾（死循环？）"
     return fake, captured
 
 
@@ -158,11 +157,10 @@ def test_status_lifecycle_emitted(monkeypatch):
 
 def test_load_session_adopts_without_spawning_worker():
     eng = AgentEngine(_settings(), lambda ev: None)
-    eng.cancel()                        # 模拟上次回合留下的中止位
+    eng.cancel()                        # 没有在跑的回合：cancel 无操作（每回合独立中止位）
     sess = Session(backend_id="art-9", title="历史题")
     assert eng.load_session(sess) is True
     assert eng.session is sess          # 置为当前会话
-    assert not eng._abort.is_set()      # 中止位清掉
     assert not eng.is_busy()            # 收编不新建 worker——发消息才跑
 
 
@@ -175,8 +173,7 @@ def test_followup_runs_on_adopted_session(monkeypatch):
                              hasImage=True, imagePath="gone.jpg"))
     assert eng.load_session(sess)
     assert eng.send_followup("再讲讲") is True
-    eng._worker.join(timeout=10)
-    assert not eng._worker.is_alive()
+    assert eng.wait_idle(10)
     assert eng.session is sess                    # 追问没换会话
     assert sess.backend_id == "art-9"             # 落库侧据此走 PUT
     assert (sess.messages[-1].role, sess.messages[-1].kind) == \
@@ -198,5 +195,58 @@ def test_load_session_refused_while_busy(monkeypatch):
     assert eng.load_session(Session()) is False   # 忙 → 拒收（调用方只读）
     assert eng.session is other                   # 会话没被换掉
     gate.set()
-    eng._worker.join(timeout=10)
-    assert not eng._worker.is_alive()
+    assert eng.wait_idle(10)
+
+
+# ---------- 并行回合（2026-10-05 用户实测「第一道没在后台完成」的回归） ----------
+
+def test_parallel_captures_run_to_their_own_turn_end(monkeypatch):
+    """第二道截屏开跑不许打断第一道：两场各自 worker、各自 turn-end（带 sid），
+    engine.session 是最新那场。"""
+    gate = threading.Event()
+    calls: list[dict] = []
+
+    def script(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            gate.wait(5)     # 第一道卡在流式里时，第二道被扫进来
+        return {"content": PHASE_A_CERTAIN}
+
+    monkeypatch.setattr("spore_client.answer.engine.stream_chat", script)
+    events: list[dict] = []
+    eng = AgentEngine(_settings(), lambda ev: events.append(ev))
+    first = eng.new_capture_turn("q1.jpg")
+    assert eng.is_busy()
+    second = eng.new_capture_turn("q2.jpg")   # 不打断第一道
+    assert eng.session is second
+    gate.set()
+    assert eng.wait_idle(10)
+    ends = [e for e in events if e["type"] == "turn-end"]
+    assert {e["sid"] for e in ends} == {first.id, second.id}
+    assert first.status == "done" and second.status == "done"
+
+
+def test_cancel_only_stops_the_current_turn(monkeypatch):
+    """🚫 只中止当前会话的回合；后台那场照跑到自己的 turn-end。"""
+    from spore_client.answer.llm import AbortedError
+
+    gate = threading.Event()
+
+    def script(**kw):
+        if not gate.is_set():
+            gate.wait(5)
+        if kw.get("abort") and kw["abort"]():
+            raise AbortedError("aborted")   # 真 stream_chat 同款：abort 抛错
+        return {"content": PHASE_A_CERTAIN}
+
+    monkeypatch.setattr("spore_client.answer.engine.stream_chat", script)
+    events: list[dict] = []
+    eng = AgentEngine(_settings(), lambda ev: events.append(ev))
+    first = eng.new_capture_turn("q1.jpg")
+    second = eng.new_capture_turn("q2.jpg")
+    eng.cancel()                    # 当前 = 第二道 → 只中止它
+    gate.set()
+    assert eng.wait_idle(10)
+    by_sid = {e["sid"]: e for e in events if e["type"] == "turn-end"}
+    assert by_sid[second.id].get("aborted") is True
+    assert by_sid[first.id].get("aborted") is None   # 后台第一道完整跑完

@@ -28,6 +28,7 @@ PATH: Path = LOG_DIR.parent / "ui_settings.json"
 _FIELDS = (
     "endpoint", "model", "maxToolRounds", "historyLimit", "proxy",
     "fastNoThink", "autoVerify", "apiKey",
+    "panelFixed", "panelPos",   # 回答面板位置固定开关 + 记住的坐标（2026-10-05）
 )
 
 

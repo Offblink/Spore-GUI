@@ -12,7 +12,7 @@
 - 追问小节标灰字在用户追问气泡上方，截屏补充不带标。
 """
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
 from spore_client.api import ApiClient
@@ -272,3 +272,154 @@ def test_purge_deletes_storage_photo_and_spares_foreign_paths(tmp_path):
     purge_article_files(art, _Api())
     assert not photo.exists()        # 题库附件 <id>.* 已删
     assert foreign.exists()          # 截图目录之外的路径绝不碰（防野路径）
+
+
+# ---------- 涂抹多选（2026-10-05 照 mobile record.js：长按进 / 单选框涂抹 / 批量） ----------
+
+def _multi_pane(qapp) -> RecordsPane:
+    """5 条会话 + 真 show（涂抹按全局几何命中行，offscreen 也要有布局）。"""
+    pane = _pane(qapp)
+    pane.rows = [
+        {"id": f"s{i}", "title": f"会话{i}", "fav": 0, "categoryId": "",
+         "updateTime": "2026-10-05 10:00:00", "status": "done",
+         "messages": []}
+        for i in range(5)
+    ]
+    pane._render_tree()
+    pane.resize(1000, 800)
+    pane.show()
+    for _ in range(3):
+        qapp.processEvents()
+    assert len(pane._session_cards) == 5
+    return pane
+
+
+def test_long_press_enters_multi_select_and_toggles(qapp):
+    pane = _multi_pane(qapp)
+    card = pane._session_cards[1]
+    assert not pane._batch_bar.isVisible()
+
+    QTest.mousePress(card, Qt.LeftButton, pos=card.rect().center())
+    QTest.qWait(650)                      # HOLD_MS=500 + 余量
+    QTest.mouseRelease(card, Qt.LeftButton, pos=card.rect().center())
+    assert pane._selecting
+    assert pane._batch_bar.isVisible()
+    assert pane._multi == {"s1"}          # 长按那张直接勾上
+    assert card.ck.isVisible() and card._checked
+    assert pane._sel_label.text() == "已选 1 项"
+    assert pane.batch_fav.isEnabled()     # 有选中 → 批量按钮可用
+
+    # 模式里点卡片 = 勾选，且绝不打开会话
+    c3 = pane._session_cards[3]
+    got: list = []
+    c3.opened.connect(lambda i: got.append(i))
+    QTest.mouseClick(c3, Qt.LeftButton, pos=c3.rect().center())
+    assert pane._multi == {"s1", "s3"}
+    assert got == []
+
+    # 换筛选（全部→收藏）退出多选（mobile scopeSwitch 同款）
+    pane._set_seg(True)
+    assert not pane._selecting
+    assert not pane._batch_bar.isVisible()
+    assert pane._multi == set()
+
+
+def test_paint_range_selects_and_reverses_on_backtrack(qapp):
+    pane = _multi_pane(qapp)
+    pane._set_selecting(True)
+    cards = pane._session_cards
+    c0 = cards[0]
+    ck = c0.ck.pos() + QPoint(8, 8)
+
+    QTest.mousePress(c0, Qt.LeftButton, pos=ck)          # 单选框起笔
+    assert pane._paint is not None
+    QTest.mouseMove(c0, c0.mapFromGlobal(
+        cards[2].frameGeometry().center()))              # 笔尖拖到 s2
+    assert pane._multi == {"s0", "s1", "s2"}
+
+    QTest.mouseMove(c0, c0.mapFromGlobal(
+        cards[1].frameGeometry().center()))              # 折返 → 换向反选新段
+    assert pane._multi == {"s0"}                         # s1/s2 反选；s0 在段外
+
+    QTest.mouseMove(c0, c0.mapFromGlobal(
+        cards[3].frameGeometry().center()))              # 再折返 → 段 1..3 全选
+    assert pane._multi == {"s0", "s1", "s2", "s3"}
+
+    QTest.mouseRelease(c0, Qt.LeftButton, pos=ck)        # 收笔：不加不减
+    assert pane._multi == {"s0", "s1", "s2", "s3"}
+    assert pane._paint is None
+
+    # 单选框轻点（没动）= 就地翻选（mobile endStroke 同款）
+    c4 = cards[4]
+    p4 = c4.ck.pos() + QPoint(8, 8)
+    QTest.mousePress(c4, Qt.LeftButton, pos=p4)
+    assert pane._paint is not None
+    QTest.mouseRelease(c4, Qt.LeftButton, pos=p4)
+    assert pane._multi == {"s0", "s1", "s2", "s3", "s4"}
+
+
+def test_batch_fav_flips_selected_rows(qapp):
+    pane = _multi_pane(qapp)
+    calls: list = []
+    pane.api.update_article = lambda aid, **kw: calls.append((aid, kw))
+    pane._set_selecting(True)
+    pane._set_checked(pane._session_cards[0], True)
+    pane._set_checked(pane._session_cards[2], True)
+
+    pane._batch_fav()
+    assert calls == [("s0", {"fav": 1}), ("s2", {"fav": 1})]
+    assert pane.rows[0]["fav"] == 1 and pane.rows[2]["fav"] == 1
+
+    calls.clear()
+    pane._batch_fav()                    # 这次选中的全已收藏 → 统一取消
+    assert calls == [("s0", {"fav": 0}), ("s2", {"fav": 0})]
+
+
+def test_batch_delete_confirms_count_and_exits_mode(qapp, monkeypatch):
+    pane = _multi_pane(qapp)
+    deleted: list = []
+    pane.api.delete_article = lambda aid: deleted.append(aid)
+    seen: dict = {}
+
+    class _OkBox:
+        def __init__(self, title, text, parent=None):
+            seen["title"] = title
+            seen["text"] = text
+
+        def exec(self):
+            return True
+
+    monkeypatch.setattr("spore_client.records.MessageBox", _OkBox)
+    monkeypatch.setattr("spore_client.records.purge_article_files",
+                        lambda art, api: None)
+    pane._set_selecting(True)
+    pane._set_checked(pane._session_cards[0], True)
+    pane._set_checked(pane._session_cards[1], True)
+
+    pane._batch_delete()
+    assert deleted == ["s0", "s1"]
+    assert "2" in seen["text"]           # 确认框带条数
+    assert not pane._selecting           # 删完退多选（mobile 同款）
+    assert pane._multi == set()
+    if pane._task is not None:
+        pane._task.wait(3000)            # reload 线程收尾，别在测试尾部销毁
+
+
+def test_unread_dot_marks_and_clears(qapp):
+    from spore_client.records import UNREAD
+
+    pane = _multi_pane(qapp)
+    try:
+        pane.mark_unread("s2")
+        assert "s2" in UNREAD
+        assert pane._session_cards[2].dot.isVisible()
+        pane._select_session("s2")        # 点开 = 已读
+        assert "s2" not in UNREAD
+        assert not pane._session_cards[2].dot.isVisible()
+
+        pane.current_id = "s3"            # 右栏正看的那场不点红点
+        pane.mark_unread("s3")
+        assert "s3" not in UNREAD
+    finally:
+        UNREAD.discard("s2")
+        UNREAD.discard("s3")

@@ -82,3 +82,19 @@ def test_key_input_saves_without_echoing(qapp):
     # 状态句子直接做占位符（2026-10-03 反馈：并入输入框，不再单挂一行字）
     assert pane.key_edit.placeholderText() == "已设置 ✓（不回显；粘贴新值回车即覆盖）"
     assert pane._collect()["apiKey"] == "sk-new"      # 进落盘白名单
+
+
+# ---------- 回答面板位置固定开关（2026-10-05 用户点名：默认开） ----------
+
+def test_panel_fixed_switch_defaults_on_and_persists(qapp, tmp_path, monkeypatch):
+    from spore_client import settings_store
+
+    monkeypatch.setattr(settings_store, "PATH", tmp_path / "ui.json")
+    pane = _pane(_StorageApi())
+    assert pane.panel_switch.isChecked()             # 键缺失 = 默认开
+
+    pane.panel_switch.setChecked(False)              # 关 → 当场落盘
+    assert settings_store.read().get("panelFixed") is False
+
+    again = _pane(_StorageApi())                     # 新实例回填读回
+    assert not again.panel_switch.isChecked()

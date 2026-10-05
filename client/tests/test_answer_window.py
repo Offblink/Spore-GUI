@@ -126,6 +126,86 @@ def test_session_list_stack_newest_on_top(qapp):
     assert ids == ["new", "old"]
 
 
+# ---------- 回答面板位置固定（2026-10-05 用户点名：默认开、记住位置） ----------
+
+def test_panel_fixed_position_defaults_on_and_reuses(qapp, tmp_path, monkeypatch):
+    from spore_client import settings_store
+
+    monkeypatch.setattr(settings_store, "PATH", tmp_path / "ui.json")
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    assert win._fixed_pos() is None          # 默认开、但还没记住 → 走选区附近
+
+    settings_store.write({"panelFixed": True, "panelPos": [40, 50]})
+    assert win._fixed_pos() == (40, 50)      # 固定开 → 记住的坐标生效
+
+    settings_store.write({"panelFixed": False, "panelPos": [40, 50]})
+    assert win._fixed_pos() is None          # 关掉 → 回到旧行为（选区附近）
+
+    settings_store.write({"panelFixed": True, "panelPos": [99999, 99999]})
+    assert win._fixed_pos() is None          # 坐标不在任何屏上 → 回落
+
+
+# ---------- 并行回合事件过滤（2026-10-05：只认面板正看着的会话） ----------
+
+def test_events_from_other_sessions_are_filtered(qapp):
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    win._sess_id = "cur"
+    win.on_event({"type": "title", "title": "别场的", "sid": "other"})
+    assert win.title.text() == "Spore"       # 后台会话的事件不许动面板
+    win.on_event({"type": "title", "title": "本场的", "sid": "cur"})
+    assert win.title.text() == "本场的"
+
+
+# ---------- 💬 列表全量翻页（2026-10-05 用户点名「不要限制」） ----------
+
+def test_session_list_fetches_all_pages(qapp):
+    from spore_client.answer_window import _SessionsTask
+
+    class _PagedApi:
+        def articles(self, page=1, size=100, **kw):
+            pages = {1: [{"id": str(i)} for i in range(200)],
+                     2: [{"id": str(i)} for i in range(200, 203)]}
+            return {"list": pages.get(page, [])}
+
+    got: list = []
+    t = _SessionsTask(_PagedApi())
+    t.ok.connect(got.append)
+    t.run()                                   # 直接跑（同线程信号直达）
+    assert len(got) == 1 and len(got[0]) == 203   # 200/页翻到短页为止
+
+    class _BrokenApi:   # 后端不翻页（每页同一批）→ 幂等集断路，不无限翻
+        def articles(self, page=1, size=100, **kw):
+            return {"list": [{"id": str(i)} for i in range(200)]}
+
+    got2: list = []
+    t2 = _SessionsTask(_BrokenApi())
+    t2.ok.connect(got2.append)
+    t2.run()
+    assert len(got2[0]) == 200
+
+
+def test_session_rows_show_unread_dot_and_clear_on_open(qapp):
+    from spore_client.records import UNREAD
+
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    UNREAD.add("old")
+    try:
+        win._render_sessions([
+            {"id": "old", "title": "旧", "updateTime": "2026-10-01 10:00:00"},
+            {"id": "new", "title": "新", "updateTime": "2026-10-03 10:00:00"},
+        ])
+        rows = [win._pop_box.itemAt(i).widget()
+                for i in range(win._pop_box.count())]
+        rows = [r for r in rows if isinstance(r, _SessionRow)]
+        # 栈序：最新在顶（new），old 在第二 —— 点挂在 old 上
+        assert rows[0].dot.isHidden()           # 没在跑的会话不带点
+        assert not rows[1].dot.isHidden()       # 后台完成的会话带红点
+        win._open_from_list({"id": "old"})
+        assert "old" not in UNREAD              # 看过了：未读账消掉
+    finally:
+        UNREAD.discard("old")
+
+
 # ---------- 追问小节标位置（2026-10-03 反馈） ----------
 
 def test_chat_start_puts_followup_label_above_user_bubble(qapp):
