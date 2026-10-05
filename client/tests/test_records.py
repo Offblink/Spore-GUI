@@ -294,34 +294,37 @@ def _multi_pane(qapp) -> RecordsPane:
     return pane
 
 
-def test_long_press_enters_multi_select_and_toggles(qapp):
+def test_batch_select_button_enters_mode_and_toggles(qapp):
     pane = _multi_pane(qapp)
-    card = pane._session_cards[1]
     assert not pane._batch_bar.isVisible()
 
-    QTest.mousePress(card, Qt.LeftButton, pos=card.rect().center())
-    QTest.qWait(650)                      # HOLD_MS=500 + 余量
-    QTest.mouseRelease(card, Qt.LeftButton, pos=card.rect().center())
+    pane.sel_btn.click()                      # 入口=「批量选择」按钮（2026-10-05 拍板）
     assert pane._selecting
+    assert pane.sel_btn.text() == "退出选择"
     assert pane._batch_bar.isVisible()
-    assert pane._multi == {"s1"}          # 长按那张直接勾上
-    assert card.ck.isVisible() and card._checked
-    assert pane._sel_label.text() == "已选 1 项"
-    assert pane.batch_fav.isEnabled()     # 有选中 → 批量按钮可用
+    assert pane._multi == set()               # 0 选起手，不自动勾
+    assert pane._sel_label.text() == "已选 0 项"
+    assert not pane.batch_fav.isEnabled()     # 0 选 → 批量按钮禁用
 
     # 模式里点卡片 = 勾选，且绝不打开会话
     c3 = pane._session_cards[3]
     got: list = []
     c3.opened.connect(lambda i: got.append(i))
     QTest.mouseClick(c3, Qt.LeftButton, pos=c3.rect().center())
-    assert pane._multi == {"s1", "s3"}
+    assert pane._multi == {"s3"}
+    assert pane.batch_fav.isEnabled()
     assert got == []
 
-    # 换筛选（全部→收藏）退出多选（mobile scopeSwitch 同款）
-    pane._set_seg(True)
+    pane.sel_btn.click()                      # 按钮再点 = 退出
     assert not pane._selecting
+    assert pane.sel_btn.text() == "批量选择"
     assert not pane._batch_bar.isVisible()
     assert pane._multi == set()
+
+    pane.sel_btn.click()                      # 重进 → 换筛选（收藏）退模式
+    assert pane._selecting
+    pane._set_seg(True)
+    assert not pane._selecting
 
 
 def test_paint_range_selects_and_reverses_on_backtrack(qapp):
@@ -334,15 +337,15 @@ def test_paint_range_selects_and_reverses_on_backtrack(qapp):
     QTest.mousePress(c0, Qt.LeftButton, pos=ck)          # 单选框起笔
     assert pane._paint is not None
     QTest.mouseMove(c0, c0.mapFromGlobal(
-        cards[2].frameGeometry().center()))              # 笔尖拖到 s2
+        cards[2].mapToGlobal(cards[2].rect().center())))  # 笔尖拖到 s2（真全局坐标）
     assert pane._multi == {"s0", "s1", "s2"}
 
     QTest.mouseMove(c0, c0.mapFromGlobal(
-        cards[1].frameGeometry().center()))              # 折返 → 换向反选新段
+        cards[1].mapToGlobal(cards[1].rect().center())))  # 折返 → 换向反选新段
     assert pane._multi == {"s0"}                         # s1/s2 反选；s0 在段外
 
     QTest.mouseMove(c0, c0.mapFromGlobal(
-        cards[3].frameGeometry().center()))              # 再折返 → 段 1..3 全选
+        cards[3].mapToGlobal(cards[3].rect().center())))  # 再折返 → 段 1..3 全选
     assert pane._multi == {"s0", "s1", "s2", "s3"}
 
     QTest.mouseRelease(c0, Qt.LeftButton, pos=ck)        # 收笔：不加不减

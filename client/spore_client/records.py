@@ -8,9 +8,10 @@
 - 已分类会话只在所属科目展开时缩进挂在行下；**未分类会话排在所有科目行之后**；
 - 会话行 `★ ✎ ⇄ ×`（hover 才显，⇄ = 移入科目·点开**模态框**选）+ 标题 +
   `MM-DD HH:mm`，点行 = 右栏显示内容；标题超宽右侧省略号，不挤行尾按钮；
-- **涂抹多选**（2026-10-05，照 mobile record.js）：长按会话行 500ms 进多选
-  （该行直接勾上）→ 单选框起笔涂抹连选（折返换向、段接力），模式里点行 =
-  勾选；底部批量栏 `已选 N 项 + ★收藏 / ⇄移入 / ×删除 / 取消`，换筛选退模式；
+- **涂抹多选**（2026-10-05，照 mobile record.js；入口=侧栏「批量选择」按钮，
+  用户拍板不要长按）：按钮按下进模式（0 选起手）→ 单选框起笔涂抹连选
+  （折返换向、段接力），模式里点行 = 勾选；底部批量栏 `已选 N 项 + ★收藏 /
+  ⇄移入 / ×删除 / 取消`，按钮再按/换筛选退模式；
 - **无右键菜单**（2026-10-03 用户死命令：行内操作全按钮化，§8-3）；
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
@@ -808,13 +809,6 @@ class RecordsPane(QWidget):
         self._multi: set[str] = set()    # 勾选的会话 id
         self._paint = None               # 本笔涂抹 {card,seg,prev,dx,dir,moved}
         self._press_card: SessionCard | None = None
-        self._press_pos = QPoint()
-        self._press_moved = False
-        self._hold_fired = False
-        self._hold_timer = QTimer(self)
-        self._hold_timer.setSingleShot(True)
-        self._hold_timer.setInterval(500)   # HOLD_MS 同款：500ms 长按进多选
-        self._hold_timer.timeout.connect(self._hold_timeout)
         self._shot_path = ""
         self._shot_pm = QPixmap()
         self._cat_task: _CatTask | None = None
@@ -875,6 +869,18 @@ class RecordsPane(QWidget):
             " color:#ec4899;}")
         self.new_cat_btn.clicked.connect(self._new_category)
         cat_row.addWidget(self.new_cat_btn, 1)
+        # 多选入口（2026-10-05 用户拍板：不要长按，点按钮进）
+        self.sel_btn = QPushButton("批量选择")
+        self.sel_btn.setCursor(Qt.PointingHandCursor)
+        self.sel_btn.setToolTip("进入多选：勾选后可批量收藏/移入/删除")
+        self.sel_btn.setStyleSheet(
+            "QPushButton{border:1px dashed #d9dcec; border-radius:10px;"
+            " padding:8px; color:#4a4f6b; font-size:13.5px;"
+            " background:transparent;}"
+            "QPushButton:hover{background:#ffeef7; border-color:#ec4899;"
+            " color:#ec4899;}")
+        self.sel_btn.clicked.connect(self._toggle_selecting)
+        cat_row.addWidget(self.sel_btn)
         sv.addLayout(cat_row)
 
         tree_scroll = QScrollArea()
@@ -1421,29 +1427,18 @@ class RecordsPane(QWidget):
             return False                      # 右键等放行（本页无右键菜单）
         if card not in self._session_cards:
             return False                      # 渲染重建中的残留：放行
-        gpos = ev.globalPosition().toPoint()
         self._press_card = card
-        self._press_pos = gpos
-        self._press_moved = False
-        self._hold_fired = False
         if self._selecting:
+            gpos = ev.globalPosition().toPoint()
             ck_rect = QRect(card.mapToGlobal(card.ck.pos()), card.ck.size())
             if ck_rect.contains(gpos):
                 self._begin_paint(card)       # 涂抹起笔（只认单选框）
-                return True
-            return True                       # 模式里卡片其他区域：只等点选收笔
-        self._hold_timer.start()              # 长按 500ms 进多选
-        return True
+            return True                       # 模式里其余区域：只等收笔勾选
+        return True                           # 平时：收笔再打开（入口=批量选择按钮）
 
     def _on_card_move(self, card, ev) -> bool:
         if self._paint is not None:
             self._paint_move(ev.globalPosition().toPoint())
-            return True
-        if self._press_card is not None and not self._hold_fired:
-            gpos = ev.globalPosition().toPoint()
-            if (gpos - self._press_pos).manhattanLength() > 10:  # SLOP 同款
-                self._hold_timer.stop()       # 动了 = 手抖/挪位置，长按作废
-                self._press_moved = True
             return True
         return False
 
@@ -1455,28 +1450,13 @@ class RecordsPane(QWidget):
             return True
         pressed = self._press_card
         self._press_card = None
-        self._hold_timer.stop()
         if pressed is None:
             return False
-        if self._hold_fired:
-            self._hold_fired = False
-            return True    # 长按刚进模式并勾上这张：收笔不许再翻选/打开
-        if self._press_moved:
-            self._press_moved = False
-            return True
         if self._selecting:
             self._toggle_multi(pressed)       # 模式里点卡片 = 勾选
         else:
-            pressed.opened.emit(pressed._id)  # 平时点开（等收笔再开，长按才判得出来）
+            pressed.opened.emit(pressed._id)  # 平时点开（等收笔再开）
         return True
-
-    def _hold_timeout(self):
-        card = self._press_card
-        if card is None or card not in self._session_cards:
-            return
-        self._hold_fired = True
-        self._set_selecting(True)
-        self._set_checked(card, True)         # 长按那张卡直接勾上（mobile 同款）
 
     # ---- 涂抹本体（语义照 record.js：起笔卡决定本笔方向；折返=换向+新段） ----
     def _begin_paint(self, card):
@@ -1487,8 +1467,14 @@ class RecordsPane(QWidget):
         card.grabMouse()
 
     def _card_at(self, gpos) -> SessionCard | None:
+        # 命中必须用**全局**矩形：Qt6 里子 widget 的 frameGeometry() 给的是
+        # 父坐标系（2026-10-05 实测 (0,88) vs 全局 (316,433)）——拿它跟
+        # globalPosition 比会整体错位，表现就是「还没涂到那张就先选中了」
         for c in reversed(self._session_cards):
-            if c.isVisible() and c.frameGeometry().contains(gpos):
+            if not c.isVisible():
+                continue
+            rect = QRect(c.mapToGlobal(QPoint(0, 0)), c.size())
+            if rect.contains(gpos):
                 return c
         return None
 
@@ -1528,14 +1514,18 @@ class RecordsPane(QWidget):
             self._toggle_multi(self._session_cards[p["seg"]])
 
     # ---- 模式与勾选状态 ----
+    def _toggle_selecting(self):
+        """侧栏「批量选择」按钮：进/出多选模式（2026-10-05 用户拍板的唯一入口）。"""
+        self._set_selecting(not self._selecting)
+
     def _set_selecting(self, on: bool):
         if self._selecting == bool(on):
             return
         self._selecting = bool(on)
         if not self._selecting:
             self._multi.clear()
-            self._hold_timer.stop()
         self._batch_bar.setVisible(self._selecting)
+        self.sel_btn.setText("退出选择" if self._selecting else "批量选择")
         for card in self._session_cards:
             card.set_multi_mode(self._selecting)
             card.set_checked(card._id in self._multi)

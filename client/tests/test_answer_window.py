@@ -206,6 +206,78 @@ def test_session_rows_show_unread_dot_and_clear_on_open(qapp):
         UNREAD.discard("old")
 
 
+# ---------- 拖入图片 URL 读取（2026-10-05 用户点名：能读 URL 即可） ----------
+
+def test_url_from_mime_takes_first_http_url():
+    from PySide6.QtCore import QMimeData, QUrl
+
+    m = QMimeData()
+    m.setUrls([QUrl("file:///tmp/x.png"), QUrl("https://a.b/c.jpg")])
+    assert AnswerWindow._url_from_mime(m) == "https://a.b/c.jpg"
+
+    plain = QMimeData()
+    plain.setText("https://x.y/z.png")
+    assert AnswerWindow._url_from_mime(plain) == "https://x.y/z.png"
+
+    junk = QMimeData()
+    junk.setText("just some text")
+    assert AnswerWindow._url_from_mime(junk) == ""
+
+    none = QMimeData()
+    assert AnswerWindow._url_from_mime(none) == ""
+
+
+def test_fetch_image_url_saves_jpeg(tmp_path, monkeypatch):
+    import io as _io
+
+    from PIL import Image
+
+    from spore_client import answer_window as aw
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (300, 200), (30, 90, 200)).save(buf, format="PNG")
+
+    class _Resp:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(aw.httpx, "get", lambda *a, **k: _Resp())
+    path = aw.fetch_image_url("https://x/y.png", dest_dir=tmp_path)
+    got = Image.open(path)
+    assert got.format == "JPEG"          # 截屏同参落盘，mime 恒 jpeg
+    assert got.size == (300, 200)
+    assert str(path).startswith(str(tmp_path))
+
+
+def test_fetch_image_url_rejects_oversize_and_non_image(tmp_path, monkeypatch):
+    import pytest
+
+    from spore_client import answer_window as aw
+
+    class _Big:
+        content = b"\x00" * (aw._MAX_IMAGE_BYTES + 1)
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(aw.httpx, "get", lambda *a, **k: _Big())
+    with pytest.raises(ValueError, match="20MB"):
+        aw.fetch_image_url("https://x/y.png", dest_dir=tmp_path)
+
+    class _Text:
+        content = b"<html>not an image</html>"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(aw.httpx, "get", lambda *a, **k: _Text())
+    from PIL import UnidentifiedImageError
+    with pytest.raises(UnidentifiedImageError):
+        aw.fetch_image_url("https://x/y.png", dest_dir=tmp_path)
+
+
 # ---------- 追问小节标位置（2026-10-03 反馈） ----------
 
 def test_chat_start_puts_followup_label_above_user_bubble(qapp):

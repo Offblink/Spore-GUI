@@ -22,11 +22,17 @@ Alt+Z 呼出/收起（与 MV3 hideToggle 同键位，用户拍板）；新截屏
 
 from __future__ import annotations
 
+import io
 import re
+import time
+from pathlib import Path
 
+import httpx
 import markdown
+from PIL import Image
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     Qt,
     QThread,
@@ -58,6 +64,7 @@ from .answer.engine import AgentEngine
 from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
+from .capture import CAPTURE_DIR, encode_jpeg
 from .log import get_logger
 from .records import UNREAD, _InputDialog, article_shot, purge_article_files
 from .settings_store import read as read_ui_settings
@@ -175,6 +182,45 @@ def _sec_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setStyleSheet("QLabel{color:#9aa0bb; font-size:11.5px; font-weight:600;}")
     return lab
+
+
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def fetch_image_url(url: str, dest_dir: Path | None = None) -> str:
+    """拖入的图片 URL → 本地 JPEG，返回落盘路径（2026-10-05 用户点名读 URL）。
+
+    走 capture.encode_jpeg（长边 1600 / q82，与截屏同参）：mime 恒 jpeg，
+    引擎 data:image/jpeg 前缀不会跟真图（可能是 png）打架。20MB 上限、跟随重定向。
+    """
+    dest_dir = Path(dest_dir) if dest_dir else CAPTURE_DIR
+    r = httpx.get(url, timeout=20.0, follow_redirects=True)
+    r.raise_for_status()
+    body = r.content
+    if len(body) > _MAX_IMAGE_BYTES:
+        raise ValueError("图片超过 20MB")
+    img = Image.open(io.BytesIO(body))   # 非图 → UnidentifiedImageError
+    img.load()
+    dest = dest_dir / f"url-{int(time.time() * 1000)}.jpg"
+    encode_jpeg(img.convert("RGB"), dest)
+    return str(dest)
+
+
+class _FetchImageTask(QThread):
+    """拖入图片的下载走后台线程（主线程不发网络，_SessionsTask 同纪律）。"""
+
+    ok = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, url: str, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        try:
+            self.ok.emit(fetch_image_url(self.url))
+        except Exception as e:  # noqa: BLE001 —— 拉图失败全收敛成一条提示
+            self.failed.emit(str(e)[:200] or type(e).__name__)
 
 
 class _SessionsTask(QThread):
@@ -319,6 +365,8 @@ class AnswerWindow(QWidget):
         super().__init__(parent, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                          | Qt.Tool)
         self._drag_pos = None
+        self.setAcceptDrops(True)          # 拖入图片 URL 读取（2026-10-05）
+        self._img_task: _FetchImageTask | None = None
         self._engine: AgentEngine | None = None
         self._api = None                      # attach_api() 注入，未注入则安全跳过
         self._current_article_id: str | None = None
@@ -412,6 +460,7 @@ class AnswerWindow(QWidget):
         self.input.returnPressed.connect(self._send)
         self.cancel_btn.clicked.connect(self._cancel)
         self._build_sessions_popup()
+        self.input.installEventFilter(self)   # 输入框会吞文字拖放 → URL 拖放接过来
 
     # ---------- 渐显/渐隐（整窗 α，2026-10-03 反馈） ----------
     def showEvent(self, ev):
@@ -463,6 +512,58 @@ class AnswerWindow(QWidget):
         if self._drag_pos is not None:
             self._drag_pos = None
             self._remember_pos()   # 拖过就记住：位置固定开着时下次从这出生
+
+    # ---------- 拖入图片 URL（2026-10-05 用户点名：读 URL 即可、改动尽量小） ----------
+    @staticmethod
+    def _url_from_mime(mime) -> str:
+        """拖放数据里第一个 http(s) URL；没有给空串。"""
+        for u in mime.urls():
+            s = u.toString()
+            if s.startswith(("http://", "https://")):
+                return s
+        t = (mime.text() or "").strip()
+        if t.startswith(("http://", "https://")) and "\n" not in t:
+            return t
+        return ""
+
+    def dragEnterEvent(self, ev):
+        if self._url_from_mime(ev.mimeData()):
+            ev.acceptProposedAction()
+
+    def dropEvent(self, ev):
+        url = self._url_from_mime(ev.mimeData())
+        if not url:
+            return
+        ev.acceptProposedAction()
+        self._fetch_dropped(url)
+
+    def eventFilter(self, obj, ev):
+        # 输入框对文字拖放是默认接受的：带 URL 的拖放在这里截走（无 URL 放行原行为）
+        if obj is getattr(self, "input", None):
+            if ev.type() == QEvent.DragEnter:
+                if self._url_from_mime(ev.mimeData()):
+                    ev.accept()
+                    return True
+            elif ev.type() == QEvent.Drop:
+                url = self._url_from_mime(ev.mimeData())
+                if url:
+                    ev.accept()
+                    self._fetch_dropped(url)
+                    return True
+        return super().eventFilter(obj, ev)
+
+    def _fetch_dropped(self, url: str):
+        LOG.info("panel drop image url=%s", url)
+        self._toast(True, "正在读取图片", url[:80], 2200)
+        self._img_task = _FetchImageTask(url, self)
+        self._img_task.ok.connect(self._on_dropped_image)
+        self._img_task.failed.connect(
+            lambda m: self._toast(False, "读取图片失败", m, 3200))
+        self._img_task.start()
+
+    def _on_dropped_image(self, path: str):
+        # 当截屏回合处理：截图区显示它、两阶段作答（与 Alt+S 同一条链）
+        self.new_turn(path)
 
     # ---------- 对外 ----------
     def attach_engine(self, engine: AgentEngine):
