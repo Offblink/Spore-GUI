@@ -359,6 +359,18 @@ class SettingsPane(QWidget):
             row.addWidget(kbd_badge(key))
             row.addStretch(1)
             lay.addLayout(row)
+
+        # AI 建议框（2026-10-08，**默认关**）：截图后离线 OCR 出建议框预选，
+        # 识别失败/超时自动退手动拖框——不进 LlmSettings，开关直接白名单落盘
+        self.ml_switch = SwitchButton()
+        self.ml_switch.setObjectName("mlSuggestSwitch")
+        self.ml_switch.checkedChanged.connect(self._ml_suggest_changed)
+        row = QHBoxLayout()
+        row.addWidget(setting_label(
+            "AI 建议框（截图后离线识别题目、自动预选；识别失败自动退回手动拖框）"), 1)
+        row.addWidget(self.ml_switch)
+        lay.addLayout(row)
+
         lay.addWidget(hint_label(
             "全局热键随进程常驻；关窗收进托盘后仍可用，托盘右键退出才注销。"))
         stack.addWidget(card)
@@ -396,6 +408,8 @@ class SettingsPane(QWidget):
         # 默认开（键缺失 = True，用户拍板的默认值）
         self.panel_switch.setChecked(
             bool(settings_store.read().get("panelFixed", True)))
+        # 默认关（键缺失 = False，AI 建议框不启用 → 零 OCR 调用）
+        self.ml_switch.setChecked(settings_store.ml_suggest_enabled())
         self._sync_key_ui()
 
         self._ready = True
@@ -418,6 +432,16 @@ class SettingsPane(QWidget):
             return                        # 回填 setChecked 触发的那次不保存
         data = settings_store.read()
         data["panelFixed"] = bool(on)
+        settings_store.write(data)
+        self.status.setText("已自动保存")
+        QTimer.singleShot(2200, self._clear_saved_hint)
+
+    def _ml_suggest_changed(self, on: bool):
+        """AI 建议框开关：同 panelFixed——不走 LlmSettings，直接白名单落盘。"""
+        if not self._ready:
+            return                        # 回填 setChecked 触发的那次不保存
+        data = settings_store.read()
+        data["ml_suggest"] = bool(on)
         settings_store.write(data)
         self.status.setText("已自动保存")
         QTimer.singleShot(2200, self._clear_saved_hint)

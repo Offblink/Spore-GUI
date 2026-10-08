@@ -11,18 +11,27 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 ROOT = Path(SPECPATH)                      # = client/
 ICON = str(ROOT / "assets" / "app.ico")
 ASSETS = str(ROOT / "spore_client" / "assets")
 
+# AI 建议框（2026-10-08）：RapidOCR 离线识别要整包进——
+# 模型 *.onnx 是包内数据、onnxruntime/cv2 原生件是动态库，漏一个开开关就崩
+ml_datas, ml_binaries, ml_hidden = collect_all("rapidocr")
+onnx_datas, onnx_binaries, onnx_hidden = collect_all("onnxruntime")
+cv_datas, cv_binaries, cv_hidden = collect_all("cv2")
+
 a = Analysis(
     [str(ROOT / "tools" / "frozen" / "Spore.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=ml_binaries + onnx_binaries + cv_binaries,
     # 包内图标（app_icon.py 用 __file__ 找 assets/，冻结后要同相对深度）
-    datas=[(ASSETS, "spore_client/assets")],
+    datas=[(ASSETS, "spore_client/assets")] + ml_datas + onnx_datas + cv_datas,
     # 懒加载/间接引用，静态分析可能漏（qrcode、PIL 子模块、全局热键库）
-    hiddenimports=["qrcode", "PIL.ImageDraw", "PIL.ImageGrab", "keyboard"],
+    hiddenimports=["qrcode", "PIL.ImageDraw", "PIL.ImageGrab", "keyboard"]
+    + ml_hidden + onnx_hidden + cv_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

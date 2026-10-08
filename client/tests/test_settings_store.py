@@ -56,6 +56,23 @@ def test_api_key_persisted_under_camel_case_only(store):
                             "apiKey": "sk-cfg"}
 
 
+# ---------- AI 建议框开关（2026-10-08，ml_suggest 默认关） ----------
+
+def test_ml_suggest_defaults_off(store):
+    assert store.read() == {}                       # 预设：没设过任何键
+    assert store.ml_suggest_enabled() is False      # 键缺失 = 默认关（零 OCR）
+
+
+def test_ml_suggest_roundtrip(store):
+    store.write({"ml_suggest": True, "endpoint": "https://x/e"})
+    assert store.read() == {"ml_suggest": True, "endpoint": "https://x/e"}
+    assert store.ml_suggest_enabled() is True       # 开 → 读回 True
+    store.write({"ml_suggest": False})
+    assert store.ml_suggest_enabled() is False      # 关 → 读回 False
+    store.write({"endpoint": "https://y/e"})        # 无此键的整体重写 → 回默认关
+    assert store.ml_suggest_enabled() is False
+
+
 # ---------- apply_to_llm ----------
 
 def test_file_values_apply_to_llm(store):

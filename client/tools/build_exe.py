@@ -44,7 +44,7 @@ def ensure_env() -> None:
     print(f'  "{BASE_PY}" -m pip --python "{VENV_PY}" install '
           "-i https://mirrors.aliyun.com/pypi/simple/ "
           '"PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" '
-          "pyinstaller httpx markdown qrcode Pillow keyboard")
+          "pyinstaller httpx markdown qrcode Pillow keyboard rapidocr")
     sys.exit(2)
 
 

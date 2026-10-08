@@ -98,6 +98,27 @@ def test_panel_fixed_switch_defaults_on_and_persists(qapp, tmp_path, monkeypatch
 
     again = _pane(_StorageApi())                     # 新实例回填读回
     assert not again.panel_switch.isChecked()
+
+
+# ---------- AI 建议框开关（2026-10-08，默认关，关着零 OCR） ----------
+
+def test_ml_suggest_switch_defaults_off_and_persists(qapp, tmp_path, monkeypatch):
+    from spore_client import settings_store
+
+    monkeypatch.setattr(settings_store, "PATH", tmp_path / "ui.json")
+    pane = _pane(_StorageApi())
+    assert not pane.ml_switch.isChecked()            # 键缺失 = 默认关
+
+    pane.ml_switch.setChecked(True)                  # 开 → 当场落盘
+    assert settings_store.read().get("ml_suggest") is True
+
+    again = _pane(_StorageApi())                     # 新实例回填读回
+    assert again.ml_switch.isChecked()
+
+    again.ml_switch.setChecked(False)                # 关 → 回落盘
+    assert settings_store.read().get("ml_suggest") is False
+    assert not _pane(_StorageApi()).ml_switch.isChecked()
+
 def test_save_key_clears_startup_key_error_and_hint(qapp):
     # 2026-10-03 用户实测：设完 API key，底部红字「API key 未设置」留到重启不消
     llm = LlmSettings(api_key="")

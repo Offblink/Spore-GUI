@@ -29,6 +29,7 @@ _FIELDS = (
     "endpoint", "model", "maxToolRounds", "historyLimit", "proxy",
     "fastNoThink", "autoVerify", "apiKey",
     "panelFixed", "panelPos",   # 回答面板位置固定开关 + 记住的坐标（2026-10-05）
+    "ml_suggest",               # AI 建议框开关（2026-10-08，默认关，关着零 OCR）
 )
 
 
@@ -52,6 +53,14 @@ def write(d: dict) -> None:
         os.replace(tmp, PATH)
     except Exception as e:  # noqa: BLE001 —— 设置写失败不该掀桌，记日志即可
         LOG.warning("ui settings write failed: %s", e)
+
+
+def ml_suggest_enabled() -> bool:
+    """AI 建议框开关：**默认关**（键缺失/非布尔一律 False）。
+
+    capture._grab 只在 True 时才起 OCR 线程——关着时零 OCR 调用、不导入 rapidocr。
+    """
+    return read().get("ml_suggest", False) is True
 
 
 def _int(v) -> int | None:
