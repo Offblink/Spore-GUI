@@ -28,7 +28,7 @@ from pathlib import Path
 import keyboard
 from PIL import Image, ImageGrab
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import settings_store
@@ -76,6 +76,58 @@ def too_small(w: float, h: float) -> bool:
     宽高**都**低于下限才算框太小（宽条、高条都能截，避免误杀细长截图）。
     """
     return w < MIN_W and h < MIN_H
+
+
+# ---------- 建议框的缩放手柄与「采纳」按钮（2026-10-09 拍板，与 MV3 端同款） ----------
+# 手柄 8 方位里**右下角让给「采纳」按钮** → 7 个；采纳只走按钮（单击框内/回车已废弃）。
+
+HANDLES = ("nw", "n", "ne", "w", "e", "sw", "s")
+HS = 10        # 手柄边长（px）
+HIT = 6        # 命中容差：手柄小，鼠标不必压得很准
+BTN_W, BTN_H = 56, 26
+
+
+def handle_centers(r: QRectF) -> dict[str, tuple[float, float]]:
+    """建议框 7 个缩放手柄的中心点（右下角没有手柄——那里是采纳按钮）。"""
+    cx, cy = r.center().x(), r.center().y()
+    return {
+        "nw": (r.left(), r.top()),
+        "n": (cx, r.top()),
+        "ne": (r.right(), r.top()),
+        "w": (r.left(), cy),
+        "e": (r.right(), cy),
+        "sw": (r.left(), r.bottom()),
+        "s": (cx, r.bottom()),
+    }
+
+
+def hit_handle(x: float, y: float, r: QRectF) -> str | None:
+    """命中缩放手柄 → 方位；没命中返回 None（容差 HS/2 + HIT）。"""
+    reach = HS / 2 + HIT
+    for d, (cx, cy) in handle_centers(r).items():
+        if abs(x - cx) <= reach and abs(y - cy) <= reach:
+            return d
+    return None
+
+
+def resize_rect(r: QRectF, d: str, x: float, y: float,
+                bound_w: float, bound_h: float) -> QRectF:
+    """拖哪条边就动哪条（含三角），夹进 [0, bound]；对边不动。纯函数，pytest 钉。"""
+    out = QRectF(r)
+    if "w" in d:
+        out.setLeft(max(0.0, min(x, out.right())))
+    if "e" in d:
+        out.setRight(min(bound_w, max(x, out.left())))
+    if "n" in d:
+        out.setTop(max(0.0, min(y, out.bottom())))
+    if "s" in d:
+        out.setBottom(min(bound_h, max(y, out.top())))
+    return out
+
+
+def accept_btn_rect(r: QRectF) -> QRectF:
+    """「采纳」按钮：贴选区右下角**外侧**（右缘与选区对齐）。视口钳制由调用方做。"""
+    return QRectF(r.right() - BTN_W, r.bottom() + 6, BTN_W, BTN_H)
 
 
 def encode_jpeg(img: Image.Image, dest: Path) -> Path:
@@ -320,15 +372,14 @@ class HotkeyManager:
 class CropOverlay(QWidget):
     """全屏不透明显示冻结帧；拖拽框选，ESC 取消，太小不收。
 
-    AI 建议框入口 `apply_suggestion`（镜像 Mobile `setSuggestion`）：预填为
-    当前选区——框内单击或回车采纳、任意拖动即替换、ESC/右键取消；
-    `_user_started`（左键起手/回车采纳）一旦置位，后到的建议一律拒绝。
+    AI 建议框入口 `apply_suggestion`（镜像 Mobile `setSuggestion`）：预填为当前选区，
+    **边界可拖**（7 个手柄微调）+ 右下角「**采纳**」按钮提交 —— 单击框内/回车采纳
+    已按 2026-10-09 拍板废弃；手拖选区照旧**松手即采纳**（只服务建议框的两步交互）。
+    `_user_started`（左键起手）一旦置位，后到的建议一律拒绝。
     """
 
     selected = Signal(object)  # (x, y, w, h) 逻辑坐标
     cancelled = Signal()
-
-    _CLICK_EPS = 3.0  # px：按下后位移不超过它算「原地单击」（采纳，不重开拖拽）
 
     def __init__(self, image: Image.Image,
                  logical: tuple[int, int], parent=None):
@@ -345,9 +396,9 @@ class CropOverlay(QWidget):
         self._hint = ""
         self._user_started = False   # 左键起手标志：起手后到的建议一律丢弃
         self._moved = False          # 本次按下是否真的拖动过
-        self._pressed_in_sel = False  # 按下点是否落在按下前的选区内（单击采纳判定）
-        # 当前选区是否来自建议框：只有建议框才享受「起手保留 + 单击采纳」，
-        # 手拖出来的选区维持旧行为（起手即清），ML 关着时与改动前逐字节一致
+        self._resize_dir: str | None = None  # 正在拖的边界方位（只有建议框能进）
+        # 当前选区是否来自建议框：只有建议框显示手柄与「采纳」按钮，
+        # 手拖出来的选区维持旧行为（起手即清、松手即采纳），ML 关着时与改动前逐字节一致
         self._rect_from_suggestion = False
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
@@ -382,6 +433,19 @@ class CropOverlay(QWidget):
             # 尺寸角标
             p.drawText(sel.left() + 4, max(14, sel.top() - 6),
                        f"{int(sel.width())}×{int(sel.height())}")
+            if self._rect_from_suggestion:
+                # 建议框才有的两件：7 个缩放手柄 + 右下角「采纳」按钮
+                p.setBrush(QBrush(QColor("#ffffff")))
+                p.setPen(QPen(QColor("#ec4899"), 2))
+                for hx, hy in handle_centers(sel).values():
+                    p.drawRect(QRectF(hx - HS / 2, hy - HS / 2, HS, HS))
+                br = self._btn_rect()
+                p.setBrush(QBrush(QColor("#ec4899")))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawRoundedRect(br, 13, 13)
+                p.setPen(QPen(QColor("#ffffff")))
+                p.drawText(br, Qt.AlignmentFlag.AlignCenter, "采纳")
+                p.setBrush(Qt.BrushStyle.NoBrush)
         if self._hint:
             p.setPen(QPen("#d13438"))
             p.drawText(24, self.height() - 24, self._hint)
@@ -397,33 +461,51 @@ class CropOverlay(QWidget):
         x, y = ev.position().x(), ev.position().y()
         self._start = (x, y)
         self._moved = False
-        if self._rect_from_suggestion:
-            # 建议框保留到第一次真正拖动（拖动即替换），原地单击落在框内 = 采纳
-            self._pressed_in_sel = (self._rect is not None
-                                    and self._rect.contains(QPointF(x, y)))
+        self._resize_dir = None
+        if self._rect_from_suggestion and self._rect is not None:
+            # 右下角「采纳」= 提交（单击框内 / 回车采纳已按 2026-10-09 拍板废弃）
+            if self._btn_rect().contains(QPointF(x, y)):
+                self._accept_rect()
+                return
+            hd = hit_handle(x, y, self._rect)
+            if hd:
+                self._resize_dir = hd  # 拖边界：改选区，松手**不**提交
+                return
+            if self._rect.contains(QPointF(x, y)):
+                return                 # 框内空白：不动（边界与按钮才是操作面）
+            # 框外起手 → 覆盖建议框，重新拖
+            self._rect = None
+            self._rect_from_suggestion = False
         else:
-            self._rect = None          # 手拖选区：起手即清（改动前的既有行为）
-            self._pressed_in_sel = False
+            self._rect = None          # 手拖选区：起手即清（既有行为）
         self.update()
 
     def mouseMoveEvent(self, ev):
         if self._start is None:
             return
-        x0, y0 = self._start
         x, y = ev.position().x(), ev.position().y()
-        if not self._moved:
-            if abs(x - x0) <= self._CLICK_EPS and abs(y - y0) <= self._CLICK_EPS:
-                return                 # 还在点击阈值内：保留原选区（预填框不闪没）
-            self._moved = True
+        if self._resize_dir and self._rect is not None:
+            self._rect = resize_rect(self._rect, self._resize_dir, x, y,
+                                     float(self.width()), float(self.height()))
+            self.update()
+            return
+        if self._rect_from_suggestion:
+            return                     # 框内空白拖动：选区原地不动
+        x0, y0 = self._start
+        self._moved = True
         self._rect = QRectF(x0, y0, x - x0, y - y0)
-        self._rect_from_suggestion = False   # 拖出来的就是手拖选区，不再享受单击采纳
         self.update()
 
     def mouseReleaseEvent(self, ev):
         if ev.button() != Qt.LeftButton:
             return
-        if not self._moved and not self._pressed_in_sel:
-            return                     # 原地单击且不在选区内：无效果（原行为同）
+        if self._resize_dir:
+            self._resize_dir = None    # 收边界：选区留下，等点「采纳」
+            return
+        if self._rect_from_suggestion:
+            return                     # 框内空白点一下：无效果，建议框还在
+        if not self._moved:
+            return                     # 原地单击：无效果（原行为同）
         self._accept_rect()
 
     def _accept_rect(self) -> None:
@@ -447,19 +529,26 @@ class CropOverlay(QWidget):
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key_Escape:
             self.cancelled.emit()
-        elif ev.key() in (Qt.Key_Return, Qt.Key_Enter) and self._rect is not None:
-            # 回车采纳当前选区（预填的建议框不必再拖一次）
-            self._user_started = True
-            self._accept_rect()
         else:
+            # Enter 采纳已废弃（2026-10-09 拍板）：采纳只走右下角按钮
             super().keyPressEvent(ev)
+
+    def _btn_rect(self) -> QRectF:
+        """「采纳」按钮矩形（贴选区右下角外侧、钳进视口）——绘制与命中同一来源。"""
+        if self._rect is None:
+            return QRectF()
+        br = accept_btn_rect(self._rect)
+        x = min(br.x(), self.width() - BTN_W)
+        y = min(br.y(), self.height() - BTN_H)
+        return QRectF(max(0.0, x), max(0.0, y), BTN_W, BTN_H)
 
     # --- AI 建议框 ---
     def apply_suggestion(self, x: float, y: float, w: float, h: float) -> bool:
         """§9.3 建议框入口（镜像 Mobile `setSuggestion`）：预填为当前选区。
 
         已起手（左键按下过）/框太小/空框 → 不覆盖，返回 False（调用方静默
-        丢弃，用户手动拖框）。预填后框内单击或回车采纳，任意拖动即替换。
+        丢弃，用户手动拖框）。预填后**拖边界微调 → 点右下角「采纳」提交**；
+        框内空白的点按/拖动不改不提交，框外起手即覆盖成手拖选区。
         """
         if self._user_started:
             return False
@@ -469,7 +558,7 @@ class CropOverlay(QWidget):
         if r.isEmpty():
             return False
         self._rect = r
-        self._rect_from_suggestion = True   # 建议框：起手保留 + 单击采纳
+        self._rect_from_suggestion = True   # 建议框：显示手柄与「采纳」按钮
         self.update()
         return True
 

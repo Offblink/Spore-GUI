@@ -7,14 +7,25 @@ map_rect 是整条截屏链路的地基（物理像素抓帧 vs 逻辑坐标框�
 import io
 import sys
 
+import pytest
 from PIL import Image
+from PySide6.QtCore import QRectF
 
 from spore_client.capture import (
+    BTN_H,
+    BTN_W,
+    HANDLES,
+    HIT,
+    HS,
     JPEG_LONG_EDGE,
     ML_TIMEOUT_MS,
     OcrLine,
+    accept_btn_rect,
     encode_jpeg,
+    handle_centers,
+    hit_handle,
     map_rect,
+    resize_rect,
     suggest,
     too_small,
     unmap_rect,
@@ -231,3 +242,124 @@ def test_rapidocr_lazy_not_imported_by_default():
     import spore_client.capture as cap
     assert "rapidocr" not in sys.modules
     assert cap._ocr_engine is None
+
+
+# ---------- 建议框手柄 + 右下角「采纳」按钮（2026-10-09 拍板，与 MV3 overlay.js 同口径） ----------
+# 拍板要点：边界可拖（7 手柄，右下角让给按钮）、采纳只走按钮、单击框内/回车采纳已废弃、
+# 手拖选区照旧松手即采纳。几何是纯函数，widget 测试走真鼠标事件。
+
+def test_handle_centers_cover_seven_dirs_without_bottom_right():
+    r = QRectF(100, 200, 300, 150)  # right=400, bottom=350
+    cs = handle_centers(r)
+    assert set(cs) == set(HANDLES) == {"nw", "n", "ne", "w", "e", "sw", "s"}
+    assert cs["e"] == (r.right(), r.center().y())
+    assert cs["s"] == (r.center().x(), r.bottom())
+    # 右下角没有手柄——那里是「采纳」按钮
+    assert all(
+        not (abs(x - r.right()) < 2 and abs(y - r.bottom()) < 2) for x, y in cs.values()
+    )
+
+
+def test_hit_handle_hits_edges_within_tolerance_and_misses_inside():
+    r = QRectF(100, 200, 300, 150)
+    assert hit_handle(r.right(), r.center().y(), r) == "e"
+    assert hit_handle(r.center().x(), r.top(), r) == "n"
+    assert hit_handle(r.left() + HS / 2 + HIT - 1, r.top(), r) == "nw"  # 容差内
+    assert hit_handle(r.center().x(), r.center().y(), r) is None  # 框心
+    assert hit_handle(r.right(), r.bottom(), r) is None  # 右下角＝按钮位，不是手柄
+
+
+def test_resize_rect_moves_only_grabbed_edges_and_clamps():
+    r = QRectF(100, 200, 300, 150)
+    e = resize_rect(r, "e", 500, 0, 800, 600)
+    assert (e.left(), e.right()) == (r.left(), 500)  # 只动东，西边不动
+    w = resize_rect(r, "w", 50, 0, 800, 600)
+    assert (w.left(), w.right()) == (50, r.right())
+    nw = resize_rect(r, "nw", 0, 0, 800, 600)
+    assert (nw.left(), nw.top()) == (0, 0)
+    assert (nw.right(), nw.bottom()) == (r.right(), r.bottom())  # 对边不动
+    assert resize_rect(r, "w", 9999, 0, 800, 600).width() == 0  # 越过右边界夹住
+    assert resize_rect(r, "s", 0, 9999, 800, 600).bottom() == 600  # 越过视口底夹住
+
+
+def test_accept_btn_sits_outside_bottom_right():
+    r = QRectF(100, 200, 300, 150)
+    b = accept_btn_rect(r)
+    assert (b.width(), b.height()) == (BTN_W, BTN_H)
+    assert b.x() + BTN_W == pytest.approx(r.right())  # 右缘对齐选区
+    assert b.y() == pytest.approx(r.bottom() + 6)  # 紧贴下边缘外侧
+    assert b.top() >= r.bottom()  # 在框外，不盖住选区内容
+
+
+def test_overlay_suggest_click_inside_noop_resize_then_accept(qapp):
+    """真鼠标流：预填 → 框内点按不提交（单击采纳已废）→ 拖东边界变宽 → 点「采纳」提交。"""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtTest import QTest
+
+    from spore_client.capture import CropOverlay
+
+    ov = CropOverlay(Image.new("RGB", (800, 600), "white"), (800, 600))
+    got: list = []
+    ov.selected.connect(lambda s: got.append(s))
+    ov.show()
+    try:
+        assert ov.apply_suggestion(100, 100, 300, 150)
+
+        # 手柄与按钮真画出来了（抓图找品牌粉，不靠肉眼）：
+        # 手柄中心是白填充（与白底同色，断不了），量它的外框；按钮量整块
+        img = ov.grab().toImage()
+
+        def has_pink(x0: int, y0: int, w: int, h: int) -> bool:
+            return any(
+                QColor(img.pixel(xx, yy)) == QColor("#ec4899")
+                for xx in range(x0, x0 + w)
+                for yy in range(y0, y0 + h)
+            )
+
+        assert has_pink(94, 94, 12, 12), "nw 手柄外框应是品牌粉"
+        assert has_pink(344, 256, BTN_W, BTN_H), "右下角「采纳」按钮应是品牌粉"
+
+        # 框内空白点一下：不提交（单击采纳已废弃），选区原样
+        QTest.mouseClick(ov, Qt.LeftButton, Qt.NoModifier, QPoint(250, 175))
+        assert got == []
+        assert ov._rect == QRectF(100, 100, 300, 150)
+
+        # 拖东边界：宽度变大，松手**不**提交（要等点采纳）
+        QTest.mousePress(ov, Qt.LeftButton, Qt.NoModifier, QPoint(400, 175))
+        QTest.mouseMove(ov, QPoint(470, 175))
+        QTest.mouseRelease(ov, Qt.LeftButton, Qt.NoModifier, QPoint(470, 175))
+        assert got == []
+        assert ov._rect.width() == pytest.approx(370)
+
+        # 点右下角「采纳」→ 提交当前（已微调的）选区
+        br = ov._btn_rect()
+        QTest.mouseClick(ov, Qt.LeftButton, Qt.NoModifier, br.center().toPoint())
+        assert len(got) == 1
+        x, y, w, h = got[0]
+        assert (x, y) == (100, 100)
+        assert w == pytest.approx(370) and h == pytest.approx(150)
+    finally:
+        ov.close()
+
+
+def test_overlay_manual_drag_still_accepts_on_release(qapp):
+    """手拖选区不受新交互影响：松手即采纳（拍板里明确保留）。"""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from spore_client.capture import CropOverlay
+
+    ov = CropOverlay(Image.new("RGB", (800, 600), "white"), (800, 600))
+    got: list = []
+    ov.selected.connect(lambda s: got.append(s))
+    ov.show()
+    try:
+        QTest.mousePress(ov, Qt.LeftButton, Qt.NoModifier, QPoint(50, 50))
+        QTest.mouseMove(ov, QPoint(350, 250))
+        QTest.mouseRelease(ov, Qt.LeftButton, Qt.NoModifier, QPoint(350, 250))
+        assert len(got) == 1
+        x, y, w, h = got[0]
+        assert (x, y, w, h) == (50, 50, 300, 200)
+    finally:
+        ov.close()
