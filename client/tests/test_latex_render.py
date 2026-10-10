@@ -10,6 +10,7 @@ Qt 富文本不吃 MathML → 走 matplotlib mathtext → PNG → data URI 内�
 """
 
 import base64
+import logging
 import re
 
 from PySide6.QtGui import QColor, QImage, QPainter, QTextDocument
@@ -181,3 +182,41 @@ def test_rule4_block_may_cross_lines():
     assert len(blocks) == 1, "块级应跨行抽取"
     _, blocks = extract_math("\\[a\nb\\]")
     assert len(blocks) == 1, "\\[..\\] 应跨行抽取"
+
+
+# ------------------------------------ 中文公式（2026-10-10 样本会话 20261010-150820211）
+def test_cjk_text_formula_renders_without_missing_glyph():
+    """`\\text{中文}` 公式：汉字必须真画出来，不许 dummy 字形。
+
+    修复前的隐性失效：图照出（21/21、0 回退）、但汉字位置画成乱码，
+    每条刷 `does not have a glyph`——所以光断言「出了图」抓不到它。
+    """
+    recs: list[str] = []
+
+    class _GlyphLog(logging.Handler):
+        def emit(self, r):
+            recs.append(r.getMessage())
+
+    lg = logging.getLogger("matplotlib.mathtext")
+    handler = _GlyphLog()
+    lg.addHandler(handler)
+    try:
+        html = _md_html(
+            r"$t_{\text{发}} = \frac{16000\ \text{字节}}{100\times10^{6}\ \text{bps}}$")
+    finally:
+        lg.removeHandler(handler)
+    assert 'data:image/png;base64,' in html, "含中文公式必须出图"
+    assert all(n > 40 for n in _png_alphas(html)), "公式图必须有真像素"
+    # 本机有中文字体（实现的候选表子集）→ 缺字形警告必须为 0。用独立探测而不是实现
+    # 内部状态：字体在位而字体集没配好（= 回归到修复前）时，这条必须以
+    # `does not have a glyph` 红出来，而不是被静默跳过。字体真不在位的镜像才让位。
+    from matplotlib import font_manager as _fm
+    try:
+        _fm.findfont(_fm.FontProperties(family="Microsoft YaHei"),
+                     fallback_to_default=False)
+        has_cjk_font = True
+    except Exception:
+        has_cjk_font = False
+    if has_cjk_font:
+        missing = [m for m in recs if "does not have a glyph" in m]
+        assert not missing, f"本机有中文字体仍缺字形: {missing[:3]}"

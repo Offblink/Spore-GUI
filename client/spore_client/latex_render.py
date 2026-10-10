@@ -53,13 +53,43 @@ _PH_RE = re.compile("\x00math(\\d+)\x00")
 _render_cache: dict[str, str] = {}
 _state: tuple | None = None     # 懒加载 matplotlib：没公式的启动不付它的时间
 
+# 中文只可能出现在 upright text（\text{} / rm 族）：默认 mathtext 字体（DejaVu/STIX）
+# 没有中文字形，mathtext 不抛错、只 substituting dummy symbol——图是出了，但「发/字/节」
+# 画成乱码（2026-10-10 实测样本会话 20261010-150820211：21 条公式全出图、全带缺字形警告）。
+# custom 字体集把 rm/bf 指到本机含 CJK 的字体即根治；it/sf/tt/cal 不动
+# （custom 下未覆盖的键保持默认 dejavusans 系，变量斜体等与切换前一致）。
+_CJK_FAMILIES = ("Microsoft YaHei", "SimSun", "SimHei", "DengXian",
+                 "Noto Sans CJK SC", "Noto Sans SC")
+_CJK_PROBE = "中发传总字节时延处理排队"  # 样本会话公式里的全部汉字 + 基础覆盖字
+_cjk_font: str | None = None     # 实际选中的字体族（测试按它判断本机是否具备条件）
+
+
+def _pick_cjk_font() -> str | None:
+    """找一个覆盖全部探针字的本机字体族；一个都没有 → None（保持默认行为不硬崩）。"""
+    from matplotlib import font_manager as fm
+    from matplotlib.ft2font import FT2Font
+    for fam in _CJK_FAMILIES:
+        try:
+            face = FT2Font(fm.findfont(fm.FontProperties(family=[fam]),
+                                       fallback_to_default=False))
+            if all(face.get_char_index(ord(ch)) for ch in _CJK_PROBE):
+                return fam
+        except Exception:
+            continue
+    return None
+
 
 def _init():
     """首次用到公式才 import matplotlib（import 本身 ~1s）。"""
-    global _state
+    global _state, _cjk_font
     if _state is None:
         import matplotlib
         matplotlib.use("Agg")
+        _cjk_font = _pick_cjk_font()
+        if _cjk_font:
+            matplotlib.rcParams["mathtext.fontset"] = "custom"
+            matplotlib.rcParams["mathtext.rm"] = _cjk_font
+            matplotlib.rcParams["mathtext.bf"] = f"{_cjk_font}:weight=bold"
         from matplotlib import figure
         from matplotlib.font_manager import FontProperties
         from matplotlib.mathtext import MathTextParser
