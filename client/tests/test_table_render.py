@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QTextDocument
 from PySide6.QtWidgets import QApplication, QLabel
 
-from spore_client.answer_window import _md_html
+from spore_client.answer_window import _md_div
 from spore_client.records import _md
 
 TABLE = """| 链路 | 单向时延 | 往返 RTT |
@@ -83,8 +83,14 @@ def _x_span(img: QImage) -> int:
 
 
 def test_answer_label_draws_table_gridlines(qapp):
-    """回答面板：线画出来、表撑满宽度、表头有底色；光板 markdown 一条线都没有。"""
-    styled, raw = _label_image(_md_html(TABLE)), _label_image(_raw_md(TABLE))
+    """回答面板：线画出来、表撑满宽度、表头有底色；光板 markdown 一条线都没有。
+
+    走 _md_div 的**生产形状**（外层 <div style=…> 把 <style> 包在里面）——
+    样式块被 div 套住还生不生效，正是最容易悄悄坏掉的那一层。
+    """
+    wrap = '<div style="color:#1a1d2e; font-size:17px;">{}</div>'
+    styled = _label_image(_md_div(TABLE, "#1a1d2e", 17))
+    raw = _label_image(wrap.format(_raw_md(TABLE)))
     n_styled, n_raw = _paint(styled, LINE), _paint(raw, LINE)
     assert n_styled > 200, f"回答面板没画出网格线: {n_styled}"
     assert n_styled - n_raw > 200, (
