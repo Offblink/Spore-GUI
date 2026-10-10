@@ -82,7 +82,7 @@ from qfluentwidgets import (
 
 from .answer.session import Session, msgs_of
 from .api import ApiClient, ApiError, NetworkError
-from .latex_render import extract_math, restore_math
+from .latex_render import extract_math, placeholder_remote_images, restore_math
 
 FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
 
@@ -112,7 +112,7 @@ def _md(text: str) -> str:
     holed, formulas = extract_math(str(text or ""))
     out = markdown.markdown(holed.replace("<<", "&lt;&lt;"),
                             extensions=["fenced_code", "tables", "nl2br"])
-    return restore_math(out, formulas)
+    return restore_math(placeholder_remote_images(out), formulas)
 
 
 def _md_inline(text: str) -> str:

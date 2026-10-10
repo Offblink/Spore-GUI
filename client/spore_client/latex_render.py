@@ -240,3 +240,26 @@ def restore_math(html: str, blocks: list[str]) -> str:
     if not blocks:
         return html
     return _PH_RE.sub(lambda m: blocks[int(m.group(1))], html)
+
+
+_IMG_TAG = re.compile(r'<img\s[^>]*?src="([^"]+)"[^>]*?>', re.I | re.S)
+_IMG_ALT = re.compile(r'alt="([^"]*)"', re.I)
+
+
+def placeholder_remote_images(html: str) -> str:
+    """非 data URI 的图片 → 可见占位文本。
+
+    Qt 富文本**不下载远程图**（QTextDocument 没有默认的网络资源加载器），
+    原样留着 `<img src="https://…">` 的结果是**什么都不显示**——信息直接消失。
+    这里退化成 `［图片：alt 或 URL］`，至少让读者知道此处有图与它的地址；
+    公式渲出来的内联图是 data URI，原样保留（不受影响）。
+    """
+    def _sub(m: re.Match) -> str:
+        src = m.group(1)
+        if src.startswith("data:"):
+            return m.group(0)
+        alt = _IMG_ALT.search(m.group(0))
+        label = alt.group(1) if (alt and alt.group(1)) else src
+        return f"［图片：{_html.escape(label)}］"
+
+    return _IMG_TAG.sub(_sub, html)

@@ -216,6 +216,26 @@ def test_math_outside_code_still_renders_next_to_code():
     assert "公式" in html and "照常" in html
 
 
+# ------------------------- 远程图片退化成可见占位（Qt 不下载远程图，2026-10-10 三端对齐）
+def test_remote_image_becomes_visible_placeholder():
+    """Qt 富文本不下载远程图：原样留 <img src="https://…"> 等于什么都不显示。"""
+    html = _md_html("看图 ![截图](https://e.com/a.png) 结束")
+    assert "<img" not in html
+    assert "［图片：截图］" in html
+
+
+def test_remote_image_without_alt_shows_url():
+    html = _md_html("![](https://e.com/b.png)")
+    assert "［图片：https://e.com/b.png］" in html
+
+
+def test_data_uri_image_kept_and_formula_inline_unaffected():
+    """data URI 的内联图（公式渲出来的）不受占位逻辑影响。"""
+    html = _md_html("公式 $a^2$ 与 ![图](https://e.com/c.png)")
+    assert html.count("data:image/png;base64,") == 1, "公式图仍是内联 data URI"
+    assert "［图片：图］" in html
+
+
 # ------------------------------------ 中文公式（2026-10-10 样本会话 20261010-150820211）
 def test_cjk_text_formula_renders_without_missing_glyph():
     """`\\text{中文}` 公式：汉字必须真画出来，不许 dummy 字形。
