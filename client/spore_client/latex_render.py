@@ -263,3 +263,29 @@ def placeholder_remote_images(html: str) -> str:
         return f"［图片：{_html.escape(label)}］"
 
     return _IMG_TAG.sub(_sub, html)
+
+
+# 表格网格线（2026-10-10 用户实测「表格没有网格线」的根因）：
+# python-markdown 的表格只吐光板 <table>/<th>/<td>，而 Qt 富文本是**只认 CSS** 的
+# —— `<table border="1">` 属性写法实测一条线都不画（本机 PySide6 6.10.2 探针）。
+# 线必须挂在 **table 元素**上：Qt 的富文本样式表对 th/td 的 border 视而不见
+# （`th,td{border:…}` 实测 0 像素），但 table 的 border 会连内部横竖分隔线一起画。
+# 样式与三端同口径：线 1px #E6E8F2（移动端 spore.css --line）、单元格 padding 5px 9px、
+# 表头底 #F1F3FB（--chip）+ 粗体。三点刻意为之：
+#   · border-collapse 必须带 —— 不带的话每条线画两遍（实测 3760 vs 1884 像素，线变粗）；
+#   · 不写 text-align —— python-markdown 每格已带内联 style="text-align:…"，
+#     选择器里再写会把列对齐（右对齐的数字列）盖掉；
+#   · width 走属性不走 CSS —— Qt 吃 width="100%"（表撑满气泡，与另两端 min-width:100% 同效），
+#     但 style 里的 width:100% 被忽略（实测表框 313px vs 599px）。
+_TABLE_STYLE = (
+    "<style>table{border:1px solid #E6E8F2;border-collapse:collapse;font-size:14.5px;}"
+    "th,td{padding:5px 9px;}"
+    "th{background-color:#F1F3FB;font-weight:bold;}</style>"
+)
+
+
+def style_tables(html: str) -> str:
+    """markdown 结果带表格就补上网格线样式 + 撑满宽度；没有表格原样返回（调用方无感知）。"""
+    if "<table" not in html:
+        return html
+    return _TABLE_STYLE + html.replace("<table>", '<table width="100%">')

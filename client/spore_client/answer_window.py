@@ -65,7 +65,7 @@ from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .api import ApiError, NetworkError
 from .capture import CAPTURE_DIR, encode_jpeg
-from .latex_render import extract_math, placeholder_remote_images, restore_math
+from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
 from .log import get_logger
 from .records import UNREAD, _InputDialog, article_shot, purge_article_files
 from .settings_store import read as read_ui_settings
@@ -120,7 +120,7 @@ def _md_html(text: str) -> str:
     out = markdown.markdown(
         holed.replace("<<", "&lt;&lt;"),
         extensions=["fenced_code", "tables", "nl2br"])
-    return restore_math(placeholder_remote_images(out), formulas)
+    return style_tables(restore_math(placeholder_remote_images(out), formulas))
 
 
 def _md_div(text: str, color: str, size: int) -> str:

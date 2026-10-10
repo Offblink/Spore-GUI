@@ -82,7 +82,7 @@ from qfluentwidgets import (
 
 from .answer.session import Session, msgs_of
 from .api import ApiClient, ApiError, NetworkError
-from .latex_render import extract_math, placeholder_remote_images, restore_math
+from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
 
 FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
 
@@ -112,7 +112,7 @@ def _md(text: str) -> str:
     holed, formulas = extract_math(str(text or ""))
     out = markdown.markdown(holed.replace("<<", "&lt;&lt;"),
                             extensions=["fenced_code", "tables", "nl2br"])
-    return restore_math(placeholder_remote_images(out), formulas)
+    return style_tables(restore_math(placeholder_remote_images(out), formulas))
 
 
 def _md_inline(text: str) -> str:
@@ -122,9 +122,15 @@ def _md_inline(text: str) -> str:
     （2026-10-03 §8-1 用户贴的分行现场）；多段时不剥，宁可保持原样。
     """
     out = _md(text)
+    # _md 可能带 <style> 前缀（表格网格线，见 latex_render.style_tables）：
+    # 判外层 <p> 前先把它挪开，否则带表的结果永远剥不掉 <p>、字号行高就散了。
+    style = ""
+    if out.startswith("<style>"):
+        cut = out.index("</style>") + len("</style>")
+        style, out = out[:cut], out[cut:]
     if out.startswith("<p>") and out.endswith("</p>") and out.count("<p>") == 1:
-        return out[3:-4]
-    return out
+        return style + out[3:-4]
+    return style + out
 
 
 def _fmt_stamp(value) -> str:
