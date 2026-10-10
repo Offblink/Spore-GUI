@@ -184,6 +184,38 @@ def test_rule4_block_may_cross_lines():
     assert len(blocks) == 1, "\\[..\\] 应跨行抽取"
 
 
+# --------------------------------------- 代码区不解析公式（三端统一口径，2026-10-10）
+def test_math_inside_fenced_code_stays_literal():
+    """围栏代码块内的 `$` 不是公式：块内不解析（与两端 md.js 同口径）。"""
+    _, blocks = extract_math("```\n$x$\n```")
+    assert blocks == [], "代码块内的 $ 不许被当公式抽走"
+    html = _md_html("```\n$x$\n```")
+    assert "data:image/png" not in html
+    assert "$x$" in html, "原文要留在代码块里"
+    assert "<code>" in html or "<pre>" in html
+
+
+def test_math_inside_indented_code_stays_literal():
+    """4 空格缩进代码块内的 `$` 同样不是公式。"""
+    _, blocks = extract_math("说明：\n\n    $a+b$\n")
+    assert blocks == []
+    html = _md_html("说明：\n\n    $a+b$\n")
+    assert "data:image/png" not in html and "$a+b$" in html
+
+
+def test_escaped_dollar_inside_code_not_unwrapped():
+    """代码块内的 `\\$` 原样保留：不许被规则3 后半还原成字面 `$`。"""
+    html = _md_html("```\n\\$5\n```")
+    assert "\\$5" in html
+
+
+def test_math_outside_code_still_renders_next_to_code():
+    """代码区外的公式照常渲染（跳过代码区不能把整篇的抽取弄坏）。"""
+    html = _md_html("```\nx\n```\n\n公式 $a^2$ 照常")
+    assert html.count("data:image/png;base64,") == 1
+    assert "公式" in html and "照常" in html
+
+
 # ------------------------------------ 中文公式（2026-10-10 样本会话 20261010-150820211）
 def test_cjk_text_formula_renders_without_missing_glyph():
     """`\\text{中文}` 公式：汉字必须真画出来，不许 dummy 字形。

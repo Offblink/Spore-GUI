@@ -147,20 +147,92 @@ def extract_math(text: str) -> tuple[str, list[str]]:
     """把公式从文本里抽走，返回 (占位文本, 公式 HTML 列表)。
 
     顺序敏感：块级先于行内（`$$..$$` 不许被单 `$` 规则半路截胡）。
+    **代码区（围栏块 / 4 空格缩进块）原样跳过**：块内的 `$` 不是公式、块内的 `\\$` 也不该被
+    还原成字面 `$`——这是三端统一口径（移动/扩展的 md.js 也是「块内不解析」；本轮对齐，
+    2026-10-10）。
     """
-    out = text
     blocks: list[str] = []
+    parts: list[str] = []
+    pos = 0
+    for start, end in _code_ranges(text):
+        parts.append(_extract_math_segment(text[pos:start], blocks))
+        parts.append(text[start:end])          # 代码区原样留给 python-markdown 的
+        pos = end                              # fenced_code / 缩进块去渲染
+    parts.append(_extract_math_segment(text[pos:], blocks))
+    return "".join(parts), blocks
 
+
+def _extract_math_segment(segment: str, blocks: list[str]) -> str:
+    """单段（非代码区）内摘公式；占位符序号在整篇的 blocks 上连续。"""
     def _sub(match: re.Match) -> str:
         raw = match.group(0)
         blocks.append(_formula_html(match.group(1), raw))
         return _PH.format(len(blocks) - 1)
 
+    out = segment
     for rx in (_BLOCK_DOLLAR, _BLOCK_BRACKET, _INLINE_DOLLAR, _INLINE_PAREN):
         out = rx.sub(_sub, out)
     # 规则3 后半：\$ 渲染成字面 `$`（python-markdown 不把 $ 列进可转义标点，
     # `\$` 原样留着会露反斜杠）——公式已抽走，这里替换不会再产生新分隔符
-    return out.replace("\\$", "$"), blocks
+    return out.replace("\\$", "$")
+
+
+# 围栏开启行（顶格；带语言串也算）——闭合要求与开启**逐字符相同**（python fenced_code 用反向引用）
+_FENCE_OPEN = re.compile(r"^(`{3,}|~{3,})[^\n]*$")
+
+
+def _code_ranges(text: str) -> list[tuple[int, int]]:
+    """代码区（围栏块 + 4 空格缩进块）的 [start, end) 偏移表。
+
+    口径照 python-markdown 实测：围栏必须顶格（缩进即不认）、未闭合不算围栏；
+    缩进块要求块起点（文档开头或空行之后），块内空行只在其后仍有缩进行时保留。
+    """
+    lines = text.split("\n")
+    offsets: list[int] = []
+    pos = 0
+    for line in lines:
+        offsets.append(pos)
+        pos += len(line) + 1                    # +1 = 被 split 吃掉的换行
+    ranges: list[tuple[int, int]] = []
+    i = 0
+    prev_blank = True                           # 文档开头算块起点
+    while i < len(lines):
+        line = lines[i]
+        m = _FENCE_OPEN.match(line.rstrip())
+        if m:
+            marker = m.group(1)
+            j = i + 1
+            close = -1
+            while j < len(lines):
+                if lines[j].rstrip() == marker:
+                    close = j
+                    break
+                j += 1
+            if close >= 0:
+                ranges.append((offsets[i], offsets[close] + len(lines[close])))
+                i = close + 1
+                prev_blank = False
+                continue
+            # 未闭合 → 不是围栏（python 口径），落回普通行处理
+        if prev_blank and line.startswith("    "):
+            j = i
+            last = i
+            while j < len(lines):
+                cur = lines[j]
+                if cur.startswith("    "):
+                    last = j
+                    j += 1
+                elif cur.strip() == "" and j + 1 < len(lines) and lines[j + 1].startswith("    "):
+                    j += 1                          # 块内空行（后面还有缩进行才算块内）
+                else:
+                    break
+            ranges.append((offsets[i], offsets[last] + len(lines[last])))
+            i = last + 1
+            prev_blank = False
+            continue
+        prev_blank = line.strip() == ""
+        i += 1
+    return ranges
 
 
 def restore_math(html: str, blocks: list[str]) -> str:
