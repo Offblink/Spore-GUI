@@ -124,16 +124,22 @@ public class SyncServiceImpl implements SyncService {
     }
 
     /**
-     * 题图路径写回（实体更新：非 null 字段才进 SET，update_time 由 MetaFillHandler 抬——
-     * 其它端靠增量 pull 看到新路径）。带 user_id 作用域，防跨用户写。
+     * 题图路径写回（update_time 抬了其它端才靠增量 pull 看到新路径）。带 user_id 作用域，防跨用户写。
+     *
+     * <p><b>必须走 wrapper 显式列字段，绝不能用半截实体</b>：{@code Article.categoryId} 是
+     * {@code updateStrategy=ALWAYS}（2026-10-03「移出科目被静默吞掉」的修复），实体更新会把
+     * <b>没赋值的 category_id 一并 SET 成 NULL</b> —— 每推一次题图就抹掉该会话的科目归属。
+     * 2026-10-11 实锤：桌面 08:28:49 把 72 条会话移入「CN-作业2」，手机 08:30:58 推题图，
+     * 72 行 category_id 全被这条 UPDATE 打回 NULL（手机/桌面两端都变回未分组）。
+     * update(null, wrapper) 不经 MetaFillHandler，update_time 要自己 set。
      */
     @Override
     public void bindAttachment(Long userId, String articleId, String path) {
-        Article upd = new Article();
-        upd.setAttachmentPath(path);
-        LambdaUpdateWrapper<Article> w = new LambdaUpdateWrapper<Article>();
-        w.eq(Article::getId, articleId).eq(Article::getUserId, userId);
-        articleMapper.update(upd, w);
+        articleMapper.update(null, new LambdaUpdateWrapper<Article>()
+                .set(Article::getAttachmentPath, path)
+                .set(Article::getUpdateTime, LocalDateTime.now())
+                .eq(Article::getId, articleId)
+                .eq(Article::getUserId, userId));
     }
 
     private boolean mergeCategory(Long userId, SyncPushReq.CategoryItem item) {

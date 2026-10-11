@@ -112,6 +112,12 @@ public class ArticleServiceImpl implements ArticleService {
         if (req.getMessages() != null) {
             a.setContent(contentOf(req.getMessages()));
         }
+        // update_time = 同步的 LWW 键 + /sync/pull 的增量游标，必须抬：MetaFillHandler 是
+        // strictUpdateFill（字段为 null 才补），实体带着 requireOwned 查出来的旧值 → 桌面的
+        // 移入科目/改名/收藏从来没抬过它（2026-10-11 实测：08:28:49 那批 56 次移入全把
+        // 08:27:1x 的旧值原样写回，比操作时刻晚 95s）。后果两条：手机端增量 pull 永远看不见
+        // 桌面改动；手机随后推送自己更旧的 touched 反而赢 LWW，把桌面刚设的科目冲掉。
+        a.setUpdateTime(LocalDateTime.now());
         articleMapper.updateById(a);
         return toVo(a, null);
     }
