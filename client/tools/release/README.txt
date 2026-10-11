@@ -4,10 +4,15 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
 【包里有什么】
   Spore.exe                       客户端（截图作答 / 搜题记录 / 设置 / 帮助）
                                   双击它即可：后端随客户端自动启动，不弹命令行窗口
+  _internal\                      程序依赖目录——Spore.exe 靠它运行，别删
   spore-backend-{VERSION}.jar         后端（Spring Boot，REST + MySQL）——请与 Spore.exe 同目录
   schema.sql                      建库脚本（首次导入用）
   application-local.yml.example   数据库口令模板（复制改名后填写）
   本说明
+
+【注意】
+  别把 Spore.exe 单独挪出文件夹——它依赖同目录的 _internal\，单独挪走会报错跑不起来；
+  要移动或复制就整个文件夹一起搬。
 
 【前置要件】
   1) JDK 8（推荐；本机若只有其它 Java 8+ 版本，会自动改用 PATH 上的 java）

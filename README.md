@@ -11,16 +11,16 @@
 
 ## 下载
 
-到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化，推荐）**：
-内含客户端 `Spore.exe`、后端 jar、`schema.sql`（建库脚本）与数据库口令模板。
+到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化包）**：
+内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 jar、`schema.sql`（建库脚本）与数据库口令模板。
 首次准备（只做一次）：
 
 1. 安装 **JDK 8** 与 **MySQL**，导入表结构：`mysql -u root -p < schema.sql`
 2. 复制 `application-local.yml.example` 为 `application-local.yml`，填入你的 MySQL 账号口令
-3. 双击 `Spore.exe` —— 后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端
+3. 双击文件夹里的 `Spore.exe` —— 后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端
 
-> `Spore.exe` 必须与 `spore-backend-*.jar` 同目录：客户端按 exe 所在目录找后端。
-> 单个 `Spore-<版本>-win64.exe` 也挂在 Releases 上，但它**只是客户端**，需要你自备后端。
+> `Spore.exe` 必须与 `spore-backend-*.jar`、`_internal\` 同目录：客户端按 exe 所在目录找后端，
+> 依赖也从 `_internal\` 加载——**别把 `Spore.exe` 单独挪出文件夹**，要挪就整个文件夹一起搬。
 > 用源码跑整套（含后端开发）见下方「快速开始」。
 
 ## 快速开始
@@ -43,7 +43,7 @@ python -m pip --python client/.venv-build/Scripts/python.exe install \
 python client/tools/build_exe.py
 ```
 
-产物 `client/dist/Spore-<版本>-win64.exe`；打包配方在 `client/Spore.spec`。
+产物 `client/dist/Spore/`（onedir 目录：`Spore.exe` + `_internal\`，不再产单文件 exe）；打包配方在 `client/Spore.spec`。
 
 ## 功能
 

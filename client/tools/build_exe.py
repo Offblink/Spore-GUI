@@ -6,19 +6,22 @@
 
 自检（不信退出码）：
 - 日志里有 `Copying icon to EXE`（只有真给了 icon 才有这行，且走 stderr）
-- dist/Spore.exe 存在、打印体积与 sha256
-- 窗口 exe 启动 15 秒后仍活着（导入失败时它没有 stdout，进程直接死）
-- 另存一份带版本名的发布资产 dist/Spore-<ver>-win64.exe
+- dist/Spore/Spore.exe 与同目录 _internal/ 存在（onedir 结构）
+- 启动后窗口必须出现：打印「到窗口」耗时（校准 WINDOW_TIMEOUT 的实测依据），
+  进程中途死掉（缺依赖 import 崩）或到点没窗口（挂死）都算失败
+- 打印产物目录的文件数 / 总体积 / 清单 sha256
 """
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import re
 import shutil
 import subprocess
 import sys
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]              # client/
@@ -26,6 +29,10 @@ VENV_PY = ROOT / ".venv-build" / "Scripts" / "python.exe"
 BASE_PY = Path.home() / "AppData/Local/Programs/Python/Python313/python.exe"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
+# 到窗口的阈值（秒）：2026-10-11 本机实测——热态到窗口 2.15/2.28/2.70s，首启
+# （Defender 扫新构建的 355MB 目录）11.8s。15s 对冷启留 ~3s 余量，够用；进程先死
+# 会立刻失败（不再像旧版固定睡满 15s）。冷启明显变慢再调这个数
+WINDOW_TIMEOUT = 15
 
 
 def version() -> str:
@@ -46,6 +53,41 @@ def ensure_env() -> None:
           '"PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" '
           "pyinstaller httpx markdown qrcode Pillow keyboard rapidocr")
     sys.exit(2)
+
+
+def window_shows_up(pid: int) -> bool:
+    """该 pid 是否已有可见顶层窗口（onedir 单进程，窗口就长在它自己身上）。"""
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd: int, _lparam: int) -> bool:
+        wpid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+        if wpid.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_cb, 0)
+    return bool(found)
+
+
+def tree_digest(root: Path) -> tuple[str, int, int]:
+    """产物目录指纹：按相对路径排序，累加 (路径, 内容 sha256)。
+
+    返回 (清单 sha256, 文件数, 总字节数)。
+    """
+    h = hashlib.sha256()
+    total = 0
+    nfiles = 0
+    for p in sorted(x for x in root.rglob("*") if x.is_file()):
+        h.update(p.relative_to(root).as_posix().encode("utf-8"))
+        h.update(b"\0")
+        data = p.read_bytes()
+        h.update(hashlib.sha256(data).digest())
+        total += len(data)
+        nfiles += 1
+    return h.hexdigest(), nfiles, total
 
 
 def main() -> int:
@@ -69,30 +111,38 @@ def main() -> int:
         return log.returncode
 
     assert "Copying icon to EXE" in out, "图标没进 exe（日志无 Copying icon）"
-    exe = DIST / "Spore.exe"
+    exe = DIST / "Spore" / "Spore.exe"
     assert exe.is_file(), f"缺产物 {exe}"
+    assert (exe.parent / "_internal").is_dir(), "缺 _internal/（onedir 结构不对）"
 
-    # 窗口 exe 存活自检：onefile 解包 + 起 Qt 慢，给 15s
-    proc = subprocess.Popen([str(exe)], cwd=str(DIST))
-    time.sleep(15)
-    alive = proc.poll() is None
-    if alive:
-        # onefile = 父 bootloader + 子进程两枚：只 terminate 父进程会留下
-        # 带窗口/热键的孤儿（2026-10-03 实测：自检完桌面上还挂着一个 Spore 登录窗）
+    # 窗口存活自检：onedir 是单进程（onefile 那种 bootloader 父子两枚没有了）。
+    # 进程先死 = import 崩；到点没窗口 = 挂死；两种都算失败，且都打印耗时
+    proc = subprocess.Popen([str(exe)], cwd=str(exe.parent))
+    t0 = time.monotonic()
+    while proc.poll() is None and not window_shows_up(proc.pid):
+        if time.monotonic() - t0 >= WINDOW_TIMEOUT:
+            break
+        time.sleep(0.3)
+    elapsed = time.monotonic() - t0
+    ok = proc.poll() is None and window_shows_up(proc.pid)
+    print(f"自检：窗口 {'出现' if ok else '未出现'}，耗时 {elapsed:.1f}s"
+          f"（阈值 {WINDOW_TIMEOUT}s，进程退出码 {proc.poll()}）")
+    if ok:
+        # 收尸：/T 连它拉起的子进程一起杀（自检时 dist/ 里没有 jar，
+        # 通常不会有后端；防御性带上）
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                        capture_output=True)
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-    assert alive, "窗口 exe 15s 内退出（缺 GUI 依赖？看 %LOCALAPPDATA%\\Spore\\logs）"
+    assert ok, (f"窗口 exe {WINDOW_TIMEOUT}s 内没起窗（退出码 {proc.poll()}；"
+                "缺 GUI 依赖？看 %LOCALAPPDATA%\\Spore\\logs）")
 
-    asset = DIST / f"Spore-{ver}-win64.exe"
-    shutil.copy2(exe, asset)
-    digest = hashlib.sha256(asset.read_bytes()).hexdigest()
-    print(f"OK   {asset}")
-    print(f"size={asset.stat().st_size / 1048576:.1f} MB")
-    print(f"sha256={digest}")
+    digest, nfiles, nbytes = tree_digest(exe.parent)
+    print(f"OK   {exe.parent}")
+    print(f"files={nfiles}  size={nbytes / 1048576:.1f} MB")
+    print(f"tree-sha256={digest}")
     return 0
 
 

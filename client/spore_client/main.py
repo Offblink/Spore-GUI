@@ -114,8 +114,8 @@ def _wait_backend(backend: EmbeddedBackend,
 def _ensure_backend(app: QApplication) -> str | None:
     """起后端（或确认外部后端在跑）。返回 None = 就绪；否则是给登录页看的一句话原因。
 
-    起不来**不弹框、不退出**——照样进登录窗，把原因写进状态栏：发行包里单独跑
-    `Spore-<ver>-win64.exe`（那个本来就不带 jar）也得能打开看说明，而不是弹个红叉
+    起不来**不弹框、不退出**——照样进登录窗，把原因写进状态栏：构建自检时
+    `Spore.exe` 旁边没有 jar 也得能打开看说明（原因进红字状态栏），而不是弹个红叉
     就自杀（2026-10-03 打包自检实测：dist 里没 jar，弹框 + 退出直接让构建断言失败）。
     """
     backend = EmbeddedBackend()

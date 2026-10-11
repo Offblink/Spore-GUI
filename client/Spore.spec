@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""Spore 客户端打包配方（onefile + windowed）。
+"""Spore 客户端打包配方（onedir + windowed）。
 
 构建（必须用干净构建 venv `.venv-build`——开发 venv 是 --system-site-packages，
 会把全局 PyQt5 版 qfluentwidgets / torch 拖进包里，见 skill windows-packaging）：
@@ -7,6 +7,14 @@
     .venv-build/Scripts/python.exe -m PyInstaller Spore.spec --noconfirm --clean
 
 或直接 `python tools/build_exe.py`（含图标生成、自检与 sha256）。
+
+onedir（2026-10-11 起）：产物 dist/Spore/ = Spore.exe（启动器）+ _internal/（全部依赖），
+依赖不再塞进 exe。onefile 版每次启动都要把解压后 ~373MB 的内容（CArchiveReader 实测）
+解到 %TEMP%\\_MEIxxxxxx 才能 import PySide6；onedir 直接从磁盘加载。
+注意：Spore.exe 不能单独挪出文件夹——它靠同目录 _internal/ 加载依赖。
+
+实测（本机 2026-10-11）：热态到窗口 2.15/2.28/2.70s；首启（Defender 扫新文件）
+11.8s。onefile 版每次启动都要先解包 373MB 才能起窗（MDPad 同口径实测 ~10-12s）。
 """
 
 from pathlib import Path
@@ -47,12 +55,13 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onedir：内容不进 exe，由 COLLECT 收进 dist/Spore/_internal/。
+# （onefile 时 a.binaries/a.datas 直接塞进 EXE，每次启动解包 373MB 才能起窗）
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="Spore",
     debug=False,
     bootloader_ignore_signals=False,
@@ -61,4 +70,13 @@ exe = EXE(
     console=False,          # GUI 应用：没有 stdout，靠日志排查
     disable_windowed_traceback=False,
     icon=ICON,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="Spore",
 )
