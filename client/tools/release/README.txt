@@ -38,8 +38,12 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
 【排障】
   答完不出结果      → 设置页检查 API Key / 测试连接
   启动时弹「后端启动失败」
-                    → 看弹窗里的后端控制台尾部；全文在 logs\backend-console.log
+                    → 看弹窗里的后端控制台尾部；全文在
+                      %LOCALAPPDATA%\Spore\logs\backend-console.log
+                      （装进 Program Files 这类不可写的目录必然落这儿；
+                        目录自己可写时才用 exe 旁的 logs\）
                       常见原因：MySQL 没起、application-local.yml 口令不对
-  界面一片空白      → 后端没起来：看 logs\spore-gui.log 或 logs\backend-console.log
+  界面一片空白      → 后端没起来：看上面那个 logs\ 目录里的
+                      spore-gui.log / backend-console.log
   题目截图不显示    → 设置页「题库目录」被移动过，重新选一次
   登录失败          → 确认 schema.sql 已导入、application-local.yml 口令正确
