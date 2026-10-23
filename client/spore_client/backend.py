@@ -217,18 +217,28 @@ def runtime_base(jar_dir: Path) -> Path:
     return home
 
 
-def config_args(workdir: Path) -> list[str]:
-    """开发态补一条 Spring 附加配置位置；发行态返回空。
+def config_args(launch: Path) -> list[str]:
+    """告诉 Spring 去哪读 ``application-local.yml``；两处都没有就返回空。
 
-    jar 里没有 ``application-local.yml``（它在 ``src/main/resources``，gitignore 敏感件，
-    打发行包时必须不在场），所以从仓库根起 jar 要把那个目录挂上。目录里没有该文件时
-    ``optional:`` 前缀也一声不吭，缺口令照样由 Spring 自己报。
+    **为什么必须显式指路**：``runtime_base`` 在 Program Files 下把 cwd 迁到可写根
+    （``%LOCALAPPDATA%\\Spore``），而 Spring 只按 ``file:./`` 搜**工作目录** → 放在 jar 旁的
+    口令文件读不到，回落到 jar 内置的 ``password: CHANGE_ME``，后端报
+    ``Access denied for user 'root'@'localhost'`` 秒退。1.3.1 实测：配置改对了也连不上库，
+    且手动在安装目录起后端却正常——差别只有 cwd。
+
+    路径写法三条硬要求：``file:`` 前缀、正斜杠（反斜杠在 URI 里是转义）、结尾斜杠
+    （目录位置的写法）。绝对路径 ⇒ 与 cwd 无关，迁不迁都成立。
+    ``optional:`` 让没有该文件的安装一声不吭，缺口令照样由 Spring 自己报。
+
+    顺序 = 优先级：开发态目录在前（``src/main/resources`` 是 gitignore 敏感件、
+    Spring 原生加载点，别被 jar 同目录的意外同名件盖掉），发行态 jar 同目录在后。
 
     口令只从文件读，**绝不进命令行**——argv 在任务管理器/wmic 里是公开的。
     """
-    dev_cfg = workdir / "src" / "main" / "resources"
-    if (dev_cfg / "application-local.yml").is_file():
-        return ["--spring.config.additional-location=optional:file:./src/main/resources/"]
+    for cfg_dir in (launch / "src" / "main" / "resources", launch):
+        if (cfg_dir / "application-local.yml").is_file():
+            return ["--spring.config.additional-location=optional:file:"
+                    + cfg_dir.resolve().as_posix() + "/"]
     return []
 
 

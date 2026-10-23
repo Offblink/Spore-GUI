@@ -108,8 +108,20 @@ def test_launch_dir_target_goes_to_repo_root(tmp_path):
     assert launch_dir(target / "spore-gui-0.1.0-SNAPSHOT.jar") == tmp_path
 
 
-def test_config_args_empty_without_dev_local_yml(tmp_path):
-    assert config_args(tmp_path) == []                    # 发行包：全靠 jar 同目录的 yml
+def test_config_args_empty_without_local_yml(tmp_path):
+    assert config_args(tmp_path) == []                    # 两处都没口令文件 → 不硬加
+
+
+def test_config_args_release_yml_points_at_jar_dir(tmp_path):
+    """1.3.1 实测回归：Program Files 下 cwd 被 runtime_base 迁到 %LOCALAPPDATA%，
+    Spring 按 file:./ 只搜工作目录 → jar 旁的口令文件读不到、回落 jar 内置
+    password: CHANGE_ME、后端 ``Access denied for user 'root'@'localhost'`` 秒退
+    （配置改对了也连不上库，手动在安装目录起却正常——差别只有 cwd）。
+    必须显式指路，且绝对 + 正斜杠 + 结尾斜杠（安装路径带空格和括号）。"""
+    (tmp_path / "application-local.yml").write_text("spring: {}", encoding="utf-8")
+    assert config_args(tmp_path) == [
+        "--spring.config.additional-location=optional:file:"
+        + tmp_path.resolve().as_posix() + "/"]
 
 
 def test_config_args_points_at_src_resources_only_when_yml_there(tmp_path):
@@ -118,7 +130,19 @@ def test_config_args_points_at_src_resources_only_when_yml_there(tmp_path):
     assert config_args(tmp_path) == []                    # 目录在但没口令文件 → 不硬加
     (dev / "application-local.yml").write_text("spring: {}", encoding="utf-8")
     assert config_args(tmp_path) == [
-        "--spring.config.additional-location=optional:file:./src/main/resources/"]
+        "--spring.config.additional-location=optional:file:"
+        + dev.resolve().as_posix() + "/"]
+
+
+def test_config_args_dev_dir_beats_jar_dir(tmp_path):
+    """两处都有时取开发态目录——保持原行为，别被 jar 同目录的意外同名件盖掉。"""
+    (tmp_path / "application-local.yml").write_text("spring: {}", encoding="utf-8")
+    dev = tmp_path / "src" / "main" / "resources"
+    dev.mkdir(parents=True)
+    (dev / "application-local.yml").write_text("spring: {}", encoding="utf-8")
+    assert config_args(tmp_path) == [
+        "--spring.config.additional-location=optional:file:"
+        + dev.resolve().as_posix() + "/"]
 
 
 # ---------- 起 ----------
