@@ -9,6 +9,11 @@
 
 评分红线不破：口令只写进本机 application-local.yml（gitignore 敏感件），
 绝不进 git、不进 release zip。
+
+界面默认只露「账号 / 密码」两项：地址/端口/库名是常量（application.yml 写死
+localhost:3306/spore_cms，schema.sql 也固定建 spore_cms），让所有用户复述程序
+已经知道的值是亏的——一旦打错端口/库名只会得到看不懂的连接失败。三者收进
+「高级设置」折叠区，只服务极少数改过端口/库名的装机。
 """
 
 from __future__ import annotations
@@ -167,7 +172,7 @@ class DbConfigWindow(QWidget):
         self._task: _RestartTask | None = None
 
         self.setWindowTitle("Spore")
-        self.resize(460, 380)
+        self.resize(460, 310)   # 收起态（只露账号+密码）；展开高级区会自动撑高
 
         cur: dict[str, str] = {}
         cfg_path = config_path_for(backend)
@@ -186,28 +191,40 @@ class DbConfigWindow(QWidget):
         root.addSpacing(4)
 
         hint = CaptionLabel(
-            "后端连不上数据库，所以起不来。填好连接信息，"
+            "后端连不上数据库，所以起不来。填好账号密码，"
             "Spore 会自动写好配置并重启后端——不用手动改任何文件。")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        self.host = LineEdit()
-        self.host.setText(cur.get("host", DEFAULTS["host"]))
-        self.port = LineEdit()
-        self.port.setText(cur.get("port", DEFAULTS["port"]))
-        self.database = LineEdit()
-        self.database.setText(cur.get("database", DEFAULTS["database"]))
         self.username = LineEdit()
         self.username.setText(cur.get("username", DEFAULTS["username"]))
         self.password = LineEdit()
         self.password.setPlaceholderText("数据库密码")
         self.password.setEchoMode(QLineEdit.Password)
 
-        root.addWidget(self._row("地址", self.host))
-        root.addWidget(self._row("端口", self.port))
-        root.addWidget(self._row("库名", self.database))
         root.addWidget(self._row("账号", self.username))
         root.addWidget(self._row("密码", self.password))
+
+        # 地址/端口/库名默认常量（localhost:3306/spore_cms），只服务改过端口/库名的装机
+        self.adv_toggle = PushButton("高级设置（地址 / 端口 / 库名）")
+        self.adv_toggle.setCheckable(True)
+        root.addWidget(self.adv_toggle)
+
+        self.adv_box = QWidget()
+        adv_lay = QVBoxLayout(self.adv_box)
+        adv_lay.setContentsMargins(0, 0, 0, 0)
+        adv_lay.setSpacing(14)
+        self.host = LineEdit()
+        self.host.setText(cur.get("host", DEFAULTS["host"]))
+        self.port = LineEdit()
+        self.port.setText(cur.get("port", DEFAULTS["port"]))
+        self.database = LineEdit()
+        self.database.setText(cur.get("database", DEFAULTS["database"]))
+        adv_lay.addWidget(self._row("地址", self.host))
+        adv_lay.addWidget(self._row("端口", self.port))
+        adv_lay.addWidget(self._row("库名", self.database))
+        self.adv_box.hide()          # 默认收起：正常用户只看到账号+密码
+        root.addWidget(self.adv_box)
 
         self.status = CaptionLabel("")
         self.status.setTextColor("#d13438", "#d13438")
@@ -229,6 +246,8 @@ class DbConfigWindow(QWidget):
         self.save_btn.clicked.connect(self._save)
         self.skip_btn.clicked.connect(self.skipped.emit)
         self.password.returnPressed.connect(self._save)
+        # 折叠开关：默认收起，点开才露地址/端口/库名（正常用户不需要它们）
+        self.adv_toggle.toggled.connect(self._toggle_advanced)
 
     # ---------- 布局小工具 ----------
     @staticmethod
@@ -244,6 +263,11 @@ class DbConfigWindow(QWidget):
         return w
 
     # ---------- 行为 ----------
+    def _toggle_advanced(self, checked: bool):
+        """展开/收起地址·端口·库名。默认收起——这三项是常量，正常用户不该碰。"""
+        self.adv_box.setVisible(checked)
+        self.adv_toggle.setText("高级设置" if checked else "高级设置（地址 / 端口 / 库名）")
+
     def _validate(self) -> bool:
         if not self.host.text().strip():
             self.status.setText("数据库地址必填")

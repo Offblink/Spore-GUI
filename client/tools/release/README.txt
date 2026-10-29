@@ -23,9 +23,11 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
        mysql -u root -p < schema.sql
      —— 注意：schema.sql 是「先删表再建表」，重跑会清空该库所有数据。
         只在全新装机时跑一次；以后升级版本不要重跑它。
-  2. 数据库口令二选一（v1.3.3 起推荐第一种，不用手动改任何文件）：
+  2) 数据库口令二选一（v1.3.3 起推荐第一种，不用手动改任何文件）：
        · 界面填：直接双击 Spore.exe。若连不上数据库会自动弹出「数据库配置」页，
-         填地址/端口/库名/账号/密码 → 点「保存并重启后端」即可，Spore 自己写配置。
+         填账号/密码 → 点「保存并重启后端」即可，Spore 自己写配置。
+         （地址/端口/库名已按默认值 localhost:3306/spore_cms 预填，收在「高级设置」里，
+           只有改过端口或库名的装机才需要点开。）
        · 手动配：把 application-local.yml.example 复制为 application-local.yml（同目录），
          把 username / password 改成你的 MySQL 账号口令，再双击 Spore.exe。
      —— 口令只存在你本机这个文件里，请勿外传、勿上传、不进 git、不随包分发。
@@ -43,8 +45,9 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
 【排障】
   答完不出结果      → 设置页检查 API Key / 测试连接
   启动时弹「数据库配置」页
-                    → 连不上 MySQL：在页里改对口令/地址/库名并点「保存并重启后端」；
+                    → 连不上 MySQL：在页里改对账号/密码并点「保存并重启后端」；
                       或确认 MySQL 服务已启动、schema.sql 已导入
+                      （地址/端口/库名不对时，点开「高级设置」再改）
   启动时弹「后端启动失败」
                     → 看弹窗里的后端控制台尾部；全文在
                       %LOCALAPPDATA%\Spore\logs\backend-console.log
