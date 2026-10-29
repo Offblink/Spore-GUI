@@ -6,7 +6,7 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
                                   双击它即可：后端随客户端自动启动，不弹命令行窗口
   _internal\                      程序依赖目录——Spore.exe 靠它运行，别删
   spore-backend-{VERSION}.jar         后端（Spring Boot，REST + MySQL）——请与 Spore.exe 同目录
-  schema.sql                      建库脚本（首次导入用）
+  schema.sql                      手动重建参考（先删表再建表，重跑清空数据；日常用不着）
   application-local.yml.example   数据库口令模板（复制改名后填写）
   本说明
 
@@ -19,18 +19,20 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
   2) MySQL（本机 3306）
 
 【首次准备（只做一次）】
-  1. 导入表结构（会创建数据库 spore_cms 与 7 张表）：
-       mysql -u root -p < schema.sql
-     —— 注意：schema.sql 是「先删表再建表」，重跑会清空该库所有数据。
-        只在全新装机时跑一次；以后升级版本不要重跑它。
-  2) 数据库口令二选一（v1.3.3 起推荐第一种，不用手动改任何文件）：
-       · 界面填：直接双击 Spore.exe。若连不上数据库会自动弹出「数据库配置」页，
-         填账号/密码 → 点「保存并重启后端」即可，Spore 自己写配置。
-         （地址/端口/库名已按默认值 localhost:3306/spore_cms 预填，收在「高级设置」里，
-           只有改过端口或库名的装机才需要点开。）
-       · 手动配：把 application-local.yml.example 复制为 application-local.yml（同目录），
-         把 username / password 改成你的 MySQL 账号口令，再双击 Spore.exe。
+  只要 MySQL 装好并在本机跑着即可——不用手动建库、不用导入 SQL。
+  首次启动时 Spore 会自动建库 spore_cms、建出 7 张表并配好角色/权限，
+  全程幂等、不会动到你已有的数据。只需告诉 Spore 一个有建库权限的 MySQL 账号：
+     · 界面填（推荐）：直接双击 Spore.exe。若连不上数据库会自动弹出「数据库配置」页，
+       填账号/密码 → 点「保存并重启后端」即可，Spore 自己建库建表并写配置。
+       （地址/端口/库名已按默认值 localhost:3306/spore_cms 预填，收在「高级设置」里，
+         只有改过端口或库名的装机才需要点开。）
+     · 手动配：把 application-local.yml.example 复制为 application-local.yml（同目录），
+       把 username / password 改成你的 MySQL 账号口令，再双击 Spore.exe。
      —— 口令只存在你本机这个文件里，请勿外传、勿上传、不进 git、不随包分发。
+     —— 账号需要有建库权限（root 即可）；能连但无建库权限会提示「自动建库失败」。
+
+  附带的 schema.sql 只是「手动重建参考」（先删表再建表，重跑会清空数据），
+  日常装机与升级都用不着它。
 
 【启动】
   双击 Spore.exe：
@@ -45,9 +47,10 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
 【排障】
   答完不出结果      → 设置页检查 API Key / 测试连接
   启动时弹「数据库配置」页
-                    → 连不上 MySQL：在页里改对账号/密码并点「保存并重启后端」；
-                      或确认 MySQL 服务已启动、schema.sql 已导入
-                      （地址/端口/库名不对时，点开「高级设置」再改）
+                    → 连不上 MySQL / 建不了库：在页里改对账号密码并点「保存并重启后端」；
+                      或确认 MySQL 服务已启动
+                      （库/表由 Spore 自动建；账号需要建库权限，root 即可。
+                        地址/端口/库名不对时，点开「高级设置」再改）
   启动时弹「后端启动失败」
                     → 看弹窗里的后端控制台尾部；全文在
                       %LOCALAPPDATA%\Spore\logs\backend-console.log

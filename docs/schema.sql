@@ -1,4 +1,18 @@
 
+-- ============================================================================
+-- docs/schema.sql —— 手动重建参考（v1.3.4 起已不是装机必跑脚本）
+--
+-- 日常装机/升级都不需要跑它：后端启动时会用 src/main/resources/schema-init.sql
+-- （幂等版：CREATE TABLE IF NOT EXISTS + INSERT IGNORE，绝不 DROP）自动建库建表播种角色。
+--
+-- 本文件保留给「想彻底清空重来」的场景——它是 mysqldump 导出的「先 DROP TABLE 再
+-- CREATE」，所以：
+--   ⚠️ 重跑会清空 spore_cms 里的全部数据（用户/科目/搜题记录）。跑前确认数据可以丢。
+--   ⚠️ 它不播种角色/权限（当初导出时剥掉了种子数据），跑完要靠后端启动时自动补。
+--
+-- 用法：mysql -u root -p < schema.sql
+-- ============================================================================
+
 /*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
 /*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
 /*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;

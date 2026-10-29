@@ -20,6 +20,13 @@ _DB_UNREACHABLE = ("### Cause: org.springframework.jdbc."
                    "CannotGetJdbcConnectionException: Failed to obtain JDBC "
                    "Connection")
 _NOT_DB_MISSING_JAR = "没找到后端 jar（spore-backend-*.jar）"
+_NOT_DB_MISSING_JAVA = "没找到 Java：请安装 JDK 8"
+# 自动建库（v1.3.4）后的新失败形态：账号能连但无建库权限
+_DB_NO_CREATE_PRIV = ("java.sql.SQLException: CREATE command denied to user "
+                      "'spore'@'localhost' for database 'spore_cms'")
+# DatabaseBootstrapConfig 自己抛的中文原因（自动建库/初始化表结构失败）
+_DB_AUTO_CREATE_FAIL = "自动建库失败：无法用当前账号在 jdbc:mysql://localhost:3306/ 上执行建库"
+_DB_AUTO_INIT_FAIL = "自动初始化表结构失败：已连上 jdbc:mysql://... 但执行 schema-init.sql 出错"
 
 
 # ---------- DB 失败识别 ----------
@@ -35,6 +42,22 @@ def test_db_unreachable_is_db_failure():
 def test_missing_jar_is_not_db_failure():
     """缺 jar 也「后端起不来」，但绝不能弹数据库配置页——判据要精准。"""
     assert not looks_like_db_failure(_NOT_DB_MISSING_JAR)
+
+
+def test_missing_java_is_not_db_failure():
+    """缺 Java 同理：不是数据库问题，弹配置页没意义（填了也起不来）。"""
+    assert not looks_like_db_failure(_NOT_DB_MISSING_JAVA)
+
+
+def test_no_create_privilege_is_db_failure():
+    """账号能连但无建库权限（v1.3.4 自动建库后的新形态）→ 要弹配置页换账号。"""
+    assert looks_like_db_failure(_DB_NO_CREATE_PRIV)
+
+
+def test_auto_create_failure_is_db_failure():
+    """自动建库/初始化表结构失败（DatabaseBootstrapConfig 中文原因）→ 弹配置页。"""
+    assert looks_like_db_failure(_DB_AUTO_CREATE_FAIL)
+    assert looks_like_db_failure(_DB_AUTO_INIT_FAIL)
 
 
 def test_empty_console_is_not_db_failure():

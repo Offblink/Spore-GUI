@@ -7,13 +7,17 @@
 取消 refresh → JVM 退出，端口从没 LISTENING）。所以配置页必须挂在「后端起不来」
 这条失败路径上，而不是嵌进登录页。
 
+v1.3.4 起后端自动建库（DatabaseBootstrapConfig）：库/表/角色/权限缺什么补什么、
+全程幂等绝不 DROP。所以用户不必先在 MySQL 里建库——但这一步仍需一个「有建库权限」
+的账号，口令错 / 缺建库权限 / MySQL 没起都会让后端起不来，仍落到本页让用户改。
+
 评分红线不破：口令只写进本机 application-local.yml（gitignore 敏感件），
 绝不进 git、不进 release zip。
 
 界面默认只露「账号 / 密码」两项：地址/端口/库名是常量（application.yml 写死
-localhost:3306/spore_cms，schema.sql 也固定建 spore_cms），让所有用户复述程序
-已经知道的值是亏的——一旦打错端口/库名只会得到看不懂的连接失败。三者收进
-「高级设置」折叠区，只服务极少数改过端口/库名的装机。
+localhost:3306/spore_cms），让所有用户复述程序已经知道的值是亏的——一旦打错
+端口/库名只会得到看不懂的连接失败。三者收进「高级设置」折叠区，只服务极少数
+改过端口/库名的装机。
 """
 
 from __future__ import annotations
@@ -39,15 +43,20 @@ from .log import get_logger
 
 LOG = get_logger()
 
-# HikariCP 连不上数据库时 Spring 控制台的特征串——用它们把「数据库问题」
+# 数据库连不上/建不了时 Spring 控制台的特征串——用它们把「数据库问题」
 # 从「后端起不来的其他原因」（缺 jar、缺 java、端口被占、卡半路）里分出来。
+# 自动建库（v1.3.4 起）后，「库不存在」不再致命（应用自己建），但账号缺建库权限、
+# 口令错、MySQL 没起仍会让后端起不来——这些都要落到配置页让用户改账号/口令。
 DB_FAILURE_MARKERS = (
     "Exception during pool initialization",
-    "Access denied for user",
+    "Access denied for user",           # 口令错，或账号无该库权限
+    "CREATE command denied",            # 账号能连但无建库权限 → 换有权限的账号
     "CannotGetJdbcConnectionException",
     "Failed to obtain JDBC Connection",
     "CommunicationsException",
-    "Communications link failure",
+    "Communications link failure",      # MySQL 服务没起
+    "自动建库失败",                       # DatabaseBootstrapConfig 抛的中文原因
+    "自动初始化表结构失败",
 )
 
 # application.yml 同款连接串后缀（时区/编码对齐，改库名/地址不影响这些）
@@ -191,8 +200,8 @@ class DbConfigWindow(QWidget):
         root.addSpacing(4)
 
         hint = CaptionLabel(
-            "后端连不上数据库，所以起不来。填好账号密码，"
-            "Spore 会自动写好配置并重启后端——不用手动改任何文件。")
+            "后端连不上数据库，所以起不来。填好账号密码，Spore 会自动建库、建表、"
+            "配好角色并重启后端——不用手动改任何文件，也不用先在 MySQL 里建库。")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
