@@ -347,13 +347,26 @@ class EmbeddedBackend:
 
     def tail_console(self, lines: int = 12) -> str:
         """后端控制台最后几行——窗口没了，这是秒退/超时唯一能给人看的东西。"""
+        return "\n".join(self._read_console().splitlines()[-lines:])
+
+    def console_text(self) -> str:
+        """后端控制台**全文**——做程序化判定（如「是不是数据库连不上」）用。
+
+        别用 tail_console 判定：Spring 秒退时堆栈有几十帧，最后 12 行全是
+        ``at com.zaxxer...`` 纯堆栈帧，真正的 ``Access denied`` / ``pool
+        initialization`` 特征串在更上面会被切掉（2026-10-29 真机冒烟栽过）。
+        日志每次 spawn 都被 ``spawn_hidden`` 用 ``"w"`` 截断，整个文件就是这一次
+        启动，读全文是安全且有界的。
+        """
+        return self._read_console()
+
+    def _read_console(self) -> str:
         if self.console_log is None or not self.console_log.is_file():
             return ""
         try:
-            text = self.console_log.read_text(encoding="utf-8", errors="replace")
+            return self.console_log.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return ""
-        return "\n".join(text.splitlines()[-lines:])
 
     # ---------- 停 ----------
     def stop(self) -> None:

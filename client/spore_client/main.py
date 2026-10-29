@@ -14,6 +14,7 @@ from . import __version__
 from .api import ApiClient
 from .app_icon import app_icon
 from .backend import BackendError, EmbeddedBackend
+from .db_config import DbConfigWindow, looks_like_db_failure
 from .instance_lock import acquire_instance_lock
 from .log import get_logger
 from .login import LoginWindow, try_device_login
@@ -52,7 +53,8 @@ def _on_wake(server: QLocalServer, app: QApplication) -> None:
     conn = server.nextPendingConnection()
     if conn is not None:
         conn.close()  # 载荷不读：连上本身就是「唤醒」
-    target = getattr(app, "_main", None) or getattr(app, "_login", None)
+    target = (getattr(app, "_main", None) or getattr(app, "_login", None)
+              or getattr(app, "_db_config", None))
     LOG.info("wake received: target=%s",
              type(target).__name__ if target is not None else "none-yet")
     if target is None:
@@ -186,8 +188,18 @@ def main() -> int:
         win = MainWindow(api)
         win.show()
         app._main = win  # noqa: SLF001
-        login.close()
+        if app._login is not None:
+            app._login.close()
         LOG.info("entered main window (login ok)")
+
+    def enter_login(note: str | None):
+        """建登录页（note=后端没起来的一句话原因，写进红字状态栏）。"""
+        win = LoginWindow(api, startup_note=note)
+        win.loginSucceeded.connect(enter_main)
+        app._login = win  # noqa: SLF001 — 单例唤醒要用
+        win.show()
+        LOG.info("showing login window (%s)",
+                 "backend unavailable" if note else "no valid device token")
 
     # 静默登录优先（device.token 在 → 直接进主窗）；后端不通就别白等 15 秒超时
     me = try_device_login(api) if problem is None else None
@@ -198,12 +210,21 @@ def main() -> int:
         LOG.info("entered main window (silent login)")
         return app.exec()
 
-    login = LoginWindow(api, startup_note=problem)
-    login.loginSucceeded.connect(enter_main)
-    app._login = login  # noqa: SLF001 — 单例唤醒要用
-    login.show()
-    LOG.info("showing login window (%s)",
-             "backend unavailable" if problem else "no valid device token")
+    # 后端因数据库连不上而起不来 → 先弹配置页（让用户填口令、客户端写 yml + 重启），
+    # 配好/跳过再进登录页。这页不能塞进登录页：口令错时后端根本起不来，登录页不存在。
+    # 判定读 console_text()（全文）而非 tail_console()：Spring 秒退时堆栈几十帧，
+    # 最后 12 行全是纯堆栈帧，Access denied/pool initialization 特征串会被切掉。
+    if problem is not None and looks_like_db_failure(
+            app._backend.console_text()):
+        cfg = DbConfigWindow(app._backend, note=problem)
+        cfg.configured.connect(lambda: enter_login(None))  # 后端起来了：干净登录页
+        cfg.skipped.connect(lambda: enter_login(problem))  # 跳过：带原因进登录页
+        app._db_config = cfg  # noqa: SLF001 — 防 GC + 单例唤醒要用
+        cfg.show()
+        LOG.info("showing db config window (backend db failure)")
+        return app.exec()
+
+    enter_login(problem)
     return app.exec()
 
 

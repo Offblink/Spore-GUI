@@ -9,19 +9,92 @@
 | 后端 `src/` | Spring Boot + MyBatis-Plus + MySQL | 本机 8080 提供 REST 接口、题图存储、账号与同步 |
 | 客户端 `client/` | Python 3.13 + PySide6（Fluent Widgets） | 截图作答、搜题记录、设置、帮助 |
 
-## 下载
+## 部署（从 Release 安装）
 
-到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化包）**：
-内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 jar、`schema.sql`（建库脚本）与数据库口令模板。
-首次准备（只做一次）：
+到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化包）**，
+内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 jar、`schema.sql`（建库脚本）与
+`application-local.yml.example`（数据库口令模板）。首次装机按下四步走，**只需做一次**。
 
-1. 安装 **JDK 8** 与 **MySQL**，导入表结构：`mysql -u root -p < schema.sql`
-2. 复制 `application-local.yml.example` 为 `application-local.yml`，填入你的 MySQL 账号口令
-3. 双击文件夹里的 `Spore.exe` —— 后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端
+### 第 0 步 · 装前提
 
-> `Spore.exe` 必须与 `spore-backend-*.jar`、`_internal\` 同目录：客户端按 exe 所在目录找后端，
-> 依赖也从 `_internal\` 加载——**别把 `Spore.exe` 单独挪出文件夹**，要挪就整个文件夹一起搬。
-> 用源码跑整套（含后端开发）见下方「快速开始」。
+| 依赖 | 版本 | 说明 |
+| --- | --- | --- |
+| **JDK** | 8 | 后端是 Spring Boot 5 + Servlet 4（`javax`），必须 JDK 8 |
+| **MySQL** | 5.7+ / 8.x | 存账号、搜题记录、题图索引；装完记得让它开机自启 |
+
+> 没装 JDK 或 MySQL 也能先把窗口打开看说明——客户端起不来后端时**不弹红叉、不退出**，
+> 会把原因写进界面（详见下方「启动失败怎么办」）。
+
+### 第 1 步 · 下载解压
+
+把 zip **整个解压到一个固定目录**，例如 `C:\Spore\`。目录里应该有：
+
+```
+Spore-<版本>-win64\
+├─ Spore.exe                    ← 客户端
+├─ _internal\                   ← 客户端依赖（PySide6 等）
+├─ spore-backend-<版本>.jar      ← 后端
+├─ schema.sql                   ← 建库脚本
+├─ application-local.yml.example ← 数据库口令模板
+└─ README.txt
+```
+
+> **别把 `Spore.exe` 单独挪出文件夹**：客户端按 exe 所在目录找后端 jar，依赖也从 `_internal\` 加载。
+> 要挪就整个文件夹一起搬。装进 `C:\Program Files\` 也没问题（不可写时数据自动落到 `%LOCALAPPDATA%\Spore\`）。
+
+### 第 2 步 · 准备数据库
+
+`schema.sql` 自带 `CREATE DATABASE spore_cms` 和 `USE`，直接导入即可（**别在命令里带库名**，
+否则会导到别的库）：
+
+```bash
+mysql -u root -p < schema.sql
+```
+
+它会建库并建出 7 张表：`user` `role` `permission` `category` `article` `sys_config`（外加操作日志表 `op_log`）。
+账号与初始数据都由应用产生——**首个注册的用户自动成为管理员**（见第 4 步）。
+
+> ⚠️ `schema.sql` 是「先 `DROP TABLE` 再 `CREATE`」的建库脚本，**重跑会清空该库里所有数据**。
+> 只在**全新装机**时跑一次；日常升级版本**不要**重跑它，直接换 `Spore.exe` 那套文件即可。
+> 真要重建库请先确认数据可以丢。
+
+### 第 3 步 · 启动并配置数据库
+
+双击 `Spore.exe`——后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端。
+
+- **v1.3.2 及以后**：如果客户端发现连不上数据库（后端起不来），会**自动弹出「数据库配置」页**，
+  你只要在界面里填好地址 / 端口 / 库名 / 账号 / 密码，点「保存并重启后端」——
+  Spore 会自己写好配置并重启后端，**全程不用手动改任何配置文件**。
+  填对了就直接进登录页；填错了页面会提示「数据库仍然连不上」，改完再存一次即可。
+
+  ![数据库配置页](docs/screenshots/db-config-page.png)
+
+  > 也可以提前手动配好：复制 `application-local.yml.example` 为 `application-local.yml`，
+  > 填入 MySQL 账号口令，双击 `Spore.exe` 就会直接进登录页。口令只留在你本机这个文件里，
+  > **不进 git、不随包分发**。
+
+- **v1.3.1 及以前**：必须手动复制 `application-local.yml.example` 为 `application-local.yml`
+  并填好口令，否则后端起不来（只会显示一句模糊的启动失败提示）。
+
+### 第 4 步 · 登录 / 注册
+
+首次使用点「注册」创建账号——**第一个注册的用户自动成为管理员**，之后用「登录」进入主界面。
+
+![登录页](docs/screenshots/login-page.png)
+
+进入主界面后，打开「设置」页粘贴大模型 API Key（回车保存），点「测试连接」确认能通，即可开始截图搜题。
+
+### 启动失败怎么办
+
+客户端起不来后端时不会直接退出，会把原因显示在界面上。常见三种：
+
+| 界面提示 | 原因 | 处置 |
+| --- | --- | --- |
+| 弹出「数据库配置」页 | 连不上 MySQL（口令错 / MySQL 没起 / 库名不对） | 在页里改对连接信息并保存；或确认 MySQL 服务已启动 |
+| 缺 jar 提示 | `Spore.exe` 不在 jar 同目录 | 把整个解压目录放一起，别单独挪 exe |
+| 缺 Java 提示 | 没装 JDK 8 | 装 JDK 8，或把 `java` 加进 `PATH` |
+
+详细堆栈都在 `logs\backend-console.log`（与 `Spore.exe` 同目录，装进 Program Files 时在 `%LOCALAPPDATA%\Spore\logs\`）。
 
 ## 快速开始
 
