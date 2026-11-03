@@ -87,9 +87,12 @@ def main() -> int:
     shutil.copytree(app, staging)
     shutil.copy2(war, staging / war.name)
     # 自带 Tomcat 9（只要跑起来必需的三件：bin/lib/conf；webapps/logs/temp/work
-    # 由客户端首启在独立 CATALINA_BASE 里现建，端口那时才钉成 8080）
+    # 由客户端首启在独立 CATALINA_BASE 里现建，端口那时才钉成 8080）。
+    # ignore *.bat：出厂红线「zip 内无 .bat」——客户端直接 java … Bootstrap start
+    # 拉起（spore_client/backend.py），Tomcat 自带的启动脚本用不上，打进包必撞红线。
     for sub in ("bin", "lib", "conf"):
-        shutil.copytree(tomcat / sub, staging / "tomcat" / sub)
+        shutil.copytree(tomcat / sub, staging / "tomcat" / sub,
+                        ignore=shutil.ignore_patterns("*.bat"))
     shutil.copy2(schema, staging / "schema.sql")
     for name in ("README.txt", "db.properties.example"):
         text = (RELEASE_FILES / name).read_text(encoding="utf-8")
