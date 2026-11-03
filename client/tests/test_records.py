@@ -378,6 +378,36 @@ def test_batch_fav_flips_selected_rows(qapp):
     assert calls == [("s0", {"fav": 0}), ("s2", {"fav": 0})]
 
 
+def test_batch_move_exits_select_mode(qapp, monkeypatch):
+    """移入科目改的是归属 → 成功后退多选并清选中。
+
+    2026-11-03 用户反馈：移完还挂着原选中态是错的（列表会按科目重排）。
+    与批量删除同口径：批量操作成功即退多选。
+    """
+    pane = _multi_pane(qapp)
+    pane._cats = [{"id": "c1", "name": "软件测试", "depth": 0}]
+    pane._set_selecting(True)
+    for card in pane._session_cards[:2]:
+        pane._set_checked(card, True)
+    assert pane._selecting and pane._multi == {"s0", "s1"}
+
+    moved: list[str] = []
+    monkeypatch.setattr(_MoveDialog, "get_target",
+                        staticmethod(lambda *a, **k: "c1"))
+    monkeypatch.setattr(pane.api, "update_article",
+                        lambda aid, **kw: moved.append(aid) or {},
+                        raising=False)
+    pane._batch_move()
+    qapp.processEvents()
+
+    assert moved == ["s0", "s1"]            # 两条都发了 assign
+    assert pane._selecting is False         # 退多选（本用例钉的就是这条）
+    assert pane._multi == set()             # 选中集清空
+    assert not pane._batch_bar.isVisible()
+    assert pane.sel_btn.text() == "批量选择"
+    assert all(str(r.get("categoryId")) == "c1" for r in pane.rows[:2])
+
+
 def test_batch_delete_confirms_count_and_exits_mode(qapp, monkeypatch):
     pane = _multi_pane(qapp)
     deleted: list = []

@@ -1682,6 +1682,9 @@ class RecordsPane(QWidget):
                 continue
             r["categoryId"] = target
             n += 1
+        if n:
+            # 归属变了 → 列表按科目重排，选中集必须跟着清（与批量删除同口径）
+            self._set_selecting(False)
         self.load_categories()
         self._render_tree()
         if n:
