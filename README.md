@@ -6,20 +6,20 @@
 
 | 部分 | 技术 | 说明 |
 | --- | --- | --- |
-| 后端 `src/` | Spring Boot + MyBatis-Plus + MySQL | 本机 8080 提供 REST 接口、题图存储、账号与同步 |
+| 后端 `src/` | 严格 SSM（Spring + SpringMVC + MyBatis-Plus）+ MySQL + Tomcat 9 | 本机 8080 提供 REST 接口、题图存储、账号与同步；**无 Spring Boot** |
 | 客户端 `client/` | Python 3.13 + PySide6（Fluent Widgets） | 截图作答、搜题记录、设置、帮助 |
 
 ## 部署（从 Release 安装）
 
 到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化包）**，
-内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 jar、`schema.sql`（建库脚本）与
-`application-local.yml.example`（数据库口令模板）。首次装机按下四步走，**只需做一次**。
+内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 war、自带 Tomcat 9、`schema.sql`（建库脚本）与
+`db.properties.example`（数据库口令模板）。首次装机按下四步走，**只需做一次**。
 
 ### 第 0 步 · 装前提
 
 | 依赖 | 版本 | 说明 |
 | --- | --- | --- |
-| **JDK** | 8 | 后端是 Spring Boot 5 + Servlet 4（`javax`），必须 JDK 8 |
+| **JDK** | 8 | 后端是严格 SSM（Spring 5 + Servlet 4 `javax`），跑在自带 Tomcat 9 上，必须 JDK 8 |
 | **MySQL** | 5.7+ / 8.x | 存账号、搜题记录、题图索引；装完记得让它开机自启 |
 
 > 没装 JDK 或 MySQL 也能先把窗口打开看说明——客户端起不来后端时**不弹红叉、不退出**，
@@ -33,13 +33,14 @@
 Spore-<版本>-win64\
 ├─ Spore.exe                    ← 客户端
 ├─ _internal\                   ← 客户端依赖（PySide6 等）
-├─ spore-backend-<版本>.jar      ← 后端
+├─ spore-backend-<版本>.war      ← 后端（严格 SSM 的 war）
+├─ tomcat\                       ← 自带 Tomcat 9（后端容器，客户端首启自动配置）
 ├─ schema.sql                   ← 建库脚本
-├─ application-local.yml.example ← 数据库口令模板
+├─ db.properties.example        ← 数据库口令模板
 └─ README.txt
 ```
 
-> **别把 `Spore.exe` 单独挪出文件夹**：客户端按 exe 所在目录找后端 jar，依赖也从 `_internal\` 加载。
+> **别把 `Spore.exe` 单独挪出文件夹**：客户端按 exe 所在目录找后端 war 与 `tomcat\`，依赖也从 `_internal\` 加载。
 > 要挪就整个文件夹一起搬。装进 `C:\Program Files\` 也没问题（不可写时数据自动落到 `%LOCALAPPDATA%\Spore\`）。
 
 ### 第 2 步 · 装好 MySQL
@@ -69,7 +70,7 @@ Spore-<版本>-win64\
 
   ![数据库配置页](docs/screenshots/db-config-page.png)
 
-  > 也可以提前手动配好：复制 `application-local.yml.example` 为 `application-local.yml`，
+  > 也可以提前手动配好：复制 `db.properties.example` 为 `db.properties`（war 同目录），
   > 填入 MySQL 账号口令，双击 `Spore.exe` 就会直接进登录页（库与表仍由应用自动建）。
   > 口令只留在你本机这个文件里，**不进 git、不随包分发**。
 
@@ -90,7 +91,7 @@ Spore-<版本>-win64\
 | 界面提示 | 原因 | 处置 |
 | --- | --- | --- |
 | 弹出「数据库配置」页 | 连不上 MySQL（口令错 / MySQL 没起 / 库名不对） | 在页里改对连接信息并保存；或确认 MySQL 服务已启动 |
-| 缺 jar 提示 | `Spore.exe` 不在 jar 同目录 | 把整个解压目录放一起，别单独挪 exe |
+| 缺 war 提示 | `Spore.exe` 不在 war 同目录 / 缺 `tomcat\` | 把整个解压目录放一起，别单独挪 exe |
 | 缺 Java 提示 | 没装 JDK 8 | 装 JDK 8，或把 `java` 加进 `PATH` |
 
 详细堆栈都在 `logs\backend-console.log`（与 `Spore.exe` 同目录，装进 Program Files 时在 `%LOCALAPPDATA%\Spore\logs\`）。
@@ -98,10 +99,12 @@ Spore-<版本>-win64\
 ## 快速开始
 
 1. 准备环境：JDK 8、Maven、Python 3.13（本机已装好即可）。
-2. 构建后端 jar：`mvn clean package -DskipTests`（客户端要从 `target/` 拿 jar 起后端）。
-3. 双击仓库根目录的 `start-spore.bat` 拉起客户端——**后端由客户端自己起，不弹命令行窗口**，
-   退出客户端即停后端；你先自己跑了 `mvn spring-boot:run` 的话，它检测到 8080 在监听就直接复用。
-4. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
+2. 构建后端 war：`mvn clean package -DskipTests`（客户端要从 `target/` 拿 war 起后端）。
+3. 告诉客户端你本机的 Tomcat 9 在哪：仓库根写一行 `tomcat.home`（内容是 Tomcat 安装目录，
+   已 gitignore），或设环境变量 `SPORE_TOMCAT`。
+4. 双击仓库根目录的 `start-spore.bat` 拉起客户端——**后端由客户端自己起，不弹命令行窗口**，
+   退出客户端即停后端；8080 上已经跑着真的 Spore 应用时它探活通过就直接复用。
+5. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
 
 ### 从源码构建客户端 exe
 
@@ -144,7 +147,7 @@ python client/tools/build_exe.py
   - `ui_settings.json`：模型、核实、检索等设置，**内含 API Key，请勿外传**
   - `logs\`：运行日志；`captures\`：截图缓存
 - 题图：后端「题库目录」（默认 `data/attachments`，设置页可切换）
-- 数据库口令：写在 `src/main/resources/application-local.yml`（不进 git）
+- 数据库口令：写在仓库根（或 war 同目录）的 `db.properties`（不进 git）
 
 ## 目录结构
 

@@ -1,0 +1,6 @@
+# 本机连接信息模板：复制成仓库根的 db.properties 后填真实值（db.properties 已 gitignore）。
+# 只写要覆盖的键即可，没写的沿用 classpath:application.properties 的默认值。
+#
+# db.url=jdbc:mysql://localhost:3306/spore_cms?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+# db.username=root
+db.password=CHANGE_ME

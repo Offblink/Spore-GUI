@@ -5,9 +5,12 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
   Spore.exe                       客户端（截图作答 / 搜题记录 / 设置 / 帮助）
                                   双击它即可：后端随客户端自动启动，不弹命令行窗口
   _internal\                      程序依赖目录——Spore.exe 靠它运行，别删
-  spore-backend-{VERSION}.jar         后端（Spring Boot，REST + MySQL）——请与 Spore.exe 同目录
+  spore-backend-{VERSION}.war         后端（严格 SSM：Spring+SpringMVC+MyBatis，REST + MySQL）
+                                  ——请与 Spore.exe 同目录
+  tomcat\                         自带 Tomcat 9（后端的运行容器；客户端首启会自动
+                                  配好它并把后端部署上去，不用你动）
   schema.sql                      手动重建参考（先删表再建表，重跑清空数据；日常用不着）
-  application-local.yml.example   数据库口令模板（复制改名后填写）
+  db.properties.example           数据库口令模板（复制改名后填写）
   本说明
 
 【注意】
@@ -26,7 +29,7 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
        填账号/密码 → 点「保存并重启后端」即可，Spore 自己建库建表并写配置。
        （地址/端口/库名已按默认值 localhost:3306/spore_cms 预填，收在「高级设置」里，
          只有改过端口或库名的装机才需要点开。）
-     · 手动配：把 application-local.yml.example 复制为 application-local.yml（同目录），
+     · 手动配：把 db.properties.example 复制为 db.properties（同目录），
        把 username / password 改成你的 MySQL 账号口令，再双击 Spore.exe。
      —— 口令只存在你本机这个文件里，请勿外传、勿上传、不进 git、不随包分发。
      —— 账号需要有建库权限（root 即可）；能连但无建库权限会提示「自动建库失败」。
@@ -56,8 +59,8 @@ Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一
                       %LOCALAPPDATA%\Spore\logs\backend-console.log
                       （装进 Program Files 这类不可写的目录必然落这儿；
                         目录自己可写时才用 exe 旁的 logs\）
-                      常见原因：缺 JDK、Spore.exe 不在 jar 同目录
+                      常见原因：缺 JDK、Spore.exe 不在 war 同目录、tomcat\ 目录缺失
   界面一片空白      → 后端没起来：看上面那个 logs\ 目录里的
                       spore-gui.log / backend-console.log
   题目截图不显示    → 设置页「题库目录」被移动过，重新选一次
-  登录失败          → 确认 schema.sql 已导入、application-local.yml 口令正确
+  登录失败          → 确认 schema.sql 已导入、db.properties 口令正确

@@ -1,9 +1,10 @@
 @echo off
 chcp 65001 >nul
-rem Spore 开发版一键启动：只起客户端。后端由客户端自己用 target\ 里的 jar 拉起
-rem （无命令行窗口；退出客户端即停后端）。8080 已被你自己的 mvn spring-boot:run
-rem 占着时，客户端检测到在监听就直接复用，不会重复起。
-rem 前置：仓库根跑过 mvn clean package（否则客户端拿不到 jar，会明确报错）。
+rem Spore 开发版一键启动：只起客户端。后端由客户端自己用 target\spore-gui.war
+rem 加仓库根 tomcat.home 指向的 Tomcat 9 拉起（无命令行窗口；退出客户端即停后端）。
+rem 8080 上已经跑着**真的 Spore 应用**时，客户端探活通过就直接复用，不会重复起；
+rem 端口被别的进程占着（例如 xerj）则不算复用，会在状态栏报端口冲突。
+rem 前置：仓库根跑过 mvn clean package（否则客户端拿不到 war，会明确报错）。
 setlocal
 cd /d "%~dp0client"
 

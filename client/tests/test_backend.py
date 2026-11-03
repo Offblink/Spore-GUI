@@ -1,6 +1,7 @@
 """backend 契约：不接管外部后端 / 缺件要说人话 / 无窗口拉起 / 退出只收自己的进程。
 
-测试一律注入端口（free_port / listener），绝不碰真 8080——本机可能正跑着别的服务。
+测试一律注入端口（free_port / http_stub），绝不碰真 8080——本机可能正跑着别的服务
+（2026-11-03 实测：8080 被 xerj 占着，那正是「端口通 ≠ 应用就绪」要探活的原因之一）。
 """
 
 import ctypes
@@ -8,7 +9,9 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -18,10 +21,13 @@ from spore_client.backend import (
     BackendError,
     EmbeddedBackend,
     config_args,
-    find_jar,
+    find_tomcat_home,
+    find_war,
     is_listening,
     kill_on_parent_exit,
     launch_dir,
+    prepare_base,
+    probe,
     runtime_base,
     spawn_hidden,
 )
@@ -46,7 +52,7 @@ def free_port():
 
 @pytest.fixture()
 def listener():
-    """真在监听的端口——扮演「外部后端已经在跑」。"""
+    """真在监听、但**不回 HTTP** 的端口——扮演「别的进程占着 8080」（如 xerj）。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     s.listen(1)
@@ -54,7 +60,52 @@ def listener():
     s.close()
 
 
-# ---------- 端口探测（就绪信号） ----------
+@pytest.fixture()
+def http_stub():
+    """按需起一个回固定响应的 HTTP 端口：(status, content_type, body) → port。"""
+    servers = []
+
+    def serve(status: int, ctype: str, body: bytes) -> int:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):                       # noqa: N802 — HTTP 动词就是大写
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):           # 别往 stderr 吵测试输出
+                pass
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        servers.append(httpd)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return httpd.server_address[1]
+
+    yield serve
+    for httpd in servers:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _fake_tomcat(root: Path) -> Path:
+    """最小假 Tomcat（home）：bin/bootstrap.jar 占位 + conf/server.xml 带 HTTP Connector。"""
+    home = root / "tomcat"
+    (home / "bin").mkdir(parents=True, exist_ok=True)
+    (home / "bin" / "bootstrap.jar").write_bytes(b"")
+    (home / "conf").mkdir(parents=True, exist_ok=True)
+    (home / "conf" / "server.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<Server>\n'
+        '  <!-- 注释掉的 Connector 绝不能被改： -->\n'
+        '  <!-- <Connector port="8443" protocol="HTTP/1.1"/> -->\n'
+        '  <Service name="Catalina">\n'
+        '    <Connector port="18081" protocol="HTTP/1.1"/>\n'
+        '  </Service>\n</Server>\n',
+        encoding="utf-8")
+    return home
+
+
+# ---------- 端口探测 / 应用探活 ----------
 
 def test_is_listening_true_when_port_bound(listener):
     assert is_listening(port=listener)
@@ -64,115 +115,225 @@ def test_is_listening_false_on_free_port(free_port):
     assert not is_listening(port=free_port)
 
 
-# ---------- 找 jar ----------
-
-def test_find_jar_prefers_release_name(tmp_path):
-    (tmp_path / "spore-gui-0.1.0-SNAPSHOT.jar").write_bytes(b"")
-    (tmp_path / "spore-backend-1.0.0.jar").write_bytes(b"")
-    assert find_jar([tmp_path]).name == "spore-backend-1.0.0.jar"
-
-
-def test_find_jar_skips_sources_and_javadoc(tmp_path):
-    (tmp_path / "spore-gui-0.1.0-SNAPSHOT-sources.jar").write_bytes(b"")
-    (tmp_path / "spore-gui-0.1.0-SNAPSHOT-javadoc.jar").write_bytes(b"")
-    assert find_jar([tmp_path]) is None
+def test_probe_true_on_spore_style_401_json(http_stub):
+    """部署好的应用：登录拦截器对无 token 请求回 401 + R 包装 JSON → 就绪。"""
+    port = http_stub(401, "application/json;charset=UTF-8",
+                     b'{"code":40101,"message":"x","data":null}')
+    assert probe(port=port)
 
 
-def test_find_jar_first_dir_wins(tmp_path):
+def test_probe_false_on_html_404(http_stub):
+    """端口通但 webapp 没部署（Tomcat 的 404 是 HTML）→ 不能算就绪。"""
+    port = http_stub(404, "text/html;charset=utf-8",
+                     b"<!doctype html><html><title>HTTP status 404</title></html>")
+    assert not probe(port=port)
+
+
+def test_probe_false_when_nothing_listening(free_port):
+    assert not probe(port=free_port)
+
+
+def test_probe_false_when_foreign_process_holds_port(listener):
+    """端口被不讲 HTTP 的进程占着（xerj 这类）→ 不是我们的应用。"""
+    assert is_listening(port=listener)
+    assert not probe(port=listener)
+
+
+# ---------- 找 war / Tomcat ----------
+
+def test_find_war_prefers_release_name(tmp_path):
+    (tmp_path / "spore-gui-0.1.0-SNAPSHOT.war").write_bytes(b"")
+    (tmp_path / "spore-backend-1.0.0.war").write_bytes(b"")
+    assert find_war([tmp_path]).name == "spore-backend-1.0.0.war"
+
+
+def test_find_war_falls_back_to_dev_war(tmp_path):
+    (tmp_path / "spore-gui.war").write_bytes(b"")
+    assert find_war([tmp_path]).name == "spore-gui.war"
+
+
+def test_find_war_first_dir_wins(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
-    (a / "spore-backend-1.0.0.jar").write_bytes(b"")
-    (b / "spore-backend-2.0.0.jar").write_bytes(b"")
-    assert find_jar([a, b]).name == "spore-backend-1.0.0.jar"
+    (a / "spore-backend-1.0.0.war").write_bytes(b"")
+    (b / "spore-backend-2.0.0.war").write_bytes(b"")
+    assert find_war([a, b]).name == "spore-backend-1.0.0.war"
 
 
-def test_find_jar_empty_search_list_finds_nothing():
-    assert find_jar([]) is None          # dirs=[] 表示「哪儿都不找」，不回落默认
+def test_find_war_empty_search_list_finds_nothing():
+    assert find_war([]) is None          # dirs=[] 表示「哪儿都不找」，不回落默认
 
 
-def test_find_jar_ignores_missing_dir(tmp_path):
-    assert find_jar([tmp_path / "nope"]) is None
+def test_find_war_ignores_missing_dir(tmp_path):
+    assert find_war([tmp_path / "nope"]) is None
+
+
+def test_find_tomcat_home_prefers_env(tmp_path, monkeypatch):
+    home = _fake_tomcat(tmp_path / "elsewhere")
+    monkeypatch.setenv("SPORE_TOMCAT", str(home))
+    assert find_tomcat_home(tmp_path) == home
+
+
+def test_find_tomcat_home_bundled_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPORE_TOMCAT", raising=False)
+    home = _fake_tomcat(tmp_path)
+    assert find_tomcat_home(tmp_path) == home
+
+
+def test_find_tomcat_home_marker_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPORE_TOMCAT", raising=False)
+    home = _fake_tomcat(tmp_path / "elsewhere")
+    (tmp_path / "tomcat.home").write_text(str(home), encoding="utf-8")
+    assert find_tomcat_home(tmp_path) == home
+
+
+def test_find_tomcat_home_none(tmp_path, monkeypatch):
+    monkeypatch.delenv("SPORE_TOMCAT", raising=False)
+    assert find_tomcat_home(tmp_path) is None
+
+
+def test_find_tomcat_home_rejects_broken_home(tmp_path, monkeypatch):
+    """目录在但不是 Tomcat（缺 bin/bootstrap.jar）→ 判没有，别到 spawn 才炸。"""
+    monkeypatch.delenv("SPORE_TOMCAT", raising=False)
+    (tmp_path / "tomcat" / "bin").mkdir(parents=True)
+    assert find_tomcat_home(tmp_path) is None
+
+
+# ---------- CATALINA_BASE 备料 ----------
+
+def test_prepare_base_pins_port_and_deploys_root_war(tmp_path):
+    """base 必须独立于 home、端口钉 8080、war 落成 ROOT.war（接口前缀是 /api）。"""
+    home = _fake_tomcat(tmp_path)
+    war = tmp_path / "spore-gui.war"
+    war.write_bytes(b"WAR")
+    base = tmp_path / "tomcat-base"
+
+    prepare_base(home, war, base)
+
+    xml = (base / "conf" / "server.xml").read_text(encoding="utf-8")
+    assert 'port="8080"' in xml                       # 客户端/手机/二维码都认 8080
+    assert 'port="18081"' not in xml                  # home 的端口不能沿用
+    assert 'port="8443"' in xml                       # 注释里的 Connector 不能被误改
+    assert (base / "webapps" / "ROOT.war").read_bytes() == b"WAR"
+    for name in ("logs", "temp", "work"):
+        assert (base / name).is_dir()
+
+
+def test_prepare_base_swaps_war_when_it_changes(tmp_path):
+    home = _fake_tomcat(tmp_path)
+    war = tmp_path / "spore-gui.war"
+    war.write_bytes(b"WAR")
+    base = tmp_path / "tomcat-base"
+    prepare_base(home, war, base)
+
+    war.write_bytes(b"NEW-WAR-CONTENT")               # 尺寸变了 → 必须重新部署
+    prepare_base(home, war, base)
+    assert (base / "webapps" / "ROOT.war").read_bytes() == b"NEW-WAR-CONTENT"
+
+
+def test_prepare_base_repins_port_on_stale_base(tmp_path):
+    """残留 base 的端口可能是旧值（真机踩过：18090 的 base 让客户端探 8080 永远不就绪、
+    等满超时）→ 端口必须**每次启动**钉回 8080，而不是只在首建时钉一次。"""
+    home = _fake_tomcat(tmp_path)
+    war = tmp_path / "spore-gui.war"
+    war.write_bytes(b"")
+    base = tmp_path / "tomcat-base"
+    prepare_base(home, war, base)
+
+    xml = base / "conf" / "server.xml"
+    xml.write_text(xml.read_text(encoding="utf-8").replace('port="8080"',
+                                                          'port="18090"'),
+                   encoding="utf-8")
+    prepare_base(home, war, base)
+    assert 'port="8080"' in xml.read_text(encoding="utf-8")
+
+
+def test_prepare_base_rejects_incomplete_tomcat(tmp_path):
+    home = tmp_path / "tomcat"
+    (home / "bin").mkdir(parents=True)
+    war = tmp_path / "spore-gui.war"
+    war.write_bytes(b"")
+    with pytest.raises(BackendError, match="server.xml"):
+        prepare_base(home, war, tmp_path / "base")
 
 
 # ---------- 工作目录 / 开发态配置 ----------
 
-def test_launch_dir_release_is_jar_dir(tmp_path):
-    assert launch_dir(tmp_path / "spore-backend-1.0.0.jar") == tmp_path
+def test_launch_dir_release_is_war_dir(tmp_path):
+    assert launch_dir(tmp_path / "spore-backend-1.0.0.war") == tmp_path
 
 
 def test_launch_dir_target_goes_to_repo_root(tmp_path):
-    """开发态 jar 在 target/ 下 → 工作目录取仓库根（否则 ./data 掉进 target/ 会被 clean 清掉）。"""
+    """开发态 war 在 target/ 下 → 工作目录取仓库根（否则 ./data 掉进 target/ 会被 clean 清掉）。"""
     target = tmp_path / "target"
     target.mkdir()
-    assert launch_dir(target / "spore-gui-0.1.0-SNAPSHOT.jar") == tmp_path
+    assert launch_dir(target / "spore-gui.war") == tmp_path
 
 
-def test_config_args_empty_without_local_yml(tmp_path):
-    assert config_args(tmp_path) == []                    # 两处都没口令文件 → 不硬加
+def test_config_args_empty_without_db_properties(tmp_path):
+    assert config_args(tmp_path) == []                # 没口令文件 → 不硬加
 
 
-def test_config_args_release_yml_points_at_jar_dir(tmp_path):
+def test_config_args_points_at_db_properties(tmp_path):
     """1.3.1 实测回归：Program Files 下 cwd 被 runtime_base 迁到 %LOCALAPPDATA%，
-    Spring 按 file:./ 只搜工作目录 → jar 旁的口令文件读不到、回落 jar 内置
-    password: CHANGE_ME、后端 ``Access denied for user 'root'@'localhost'`` 秒退
-    （配置改对了也连不上库，手动在安装目录起却正常——差别只有 cwd）。
-    必须显式指路，且绝对 + 正斜杠 + 结尾斜杠（安装路径带空格和括号）。"""
-    (tmp_path / "application-local.yml").write_text("spring: {}", encoding="utf-8")
+    后端按工作目录搜 ``./db.properties`` 就读不到 war 旁的口令文件、回落 classpath 的
+    ``CHANGE_ME``、报 ``Access denied for user 'root'@'localhost'``（配置改对了也连不上库，
+    手动在安装目录起却正常——差别只有 cwd）。必须显式指路，且绝对路径（路径带空格和括号）。
+    口令只从文件读，**绝不进命令行**——这里传的是文件路径，不是口令本身。"""
+    (tmp_path / "db.properties").write_text("db.password=x", encoding="utf-8")
     assert config_args(tmp_path) == [
-        "--spring.config.additional-location=optional:file:"
-        + tmp_path.resolve().as_posix() + "/"]
-
-
-def test_config_args_points_at_src_resources_only_when_yml_there(tmp_path):
-    dev = tmp_path / "src" / "main" / "resources"
-    dev.mkdir(parents=True)
-    assert config_args(tmp_path) == []                    # 目录在但没口令文件 → 不硬加
-    (dev / "application-local.yml").write_text("spring: {}", encoding="utf-8")
-    assert config_args(tmp_path) == [
-        "--spring.config.additional-location=optional:file:"
-        + dev.resolve().as_posix() + "/"]
-
-
-def test_config_args_dev_dir_beats_jar_dir(tmp_path):
-    """两处都有时取开发态目录——保持原行为，别被 jar 同目录的意外同名件盖掉。"""
-    (tmp_path / "application-local.yml").write_text("spring: {}", encoding="utf-8")
-    dev = tmp_path / "src" / "main" / "resources"
-    dev.mkdir(parents=True)
-    (dev / "application-local.yml").write_text("spring: {}", encoding="utf-8")
-    assert config_args(tmp_path) == [
-        "--spring.config.additional-location=optional:file:"
-        + dev.resolve().as_posix() + "/"]
+        f"-Dspore.config={(tmp_path / 'db.properties').resolve()}"]
 
 
 # ---------- 起 ----------
 
-def test_external_backend_is_reused_not_taken_over(listener):
-    be = EmbeddedBackend(search_dirs=[], port=listener)
-    assert be.start_if_needed() is False      # 已在监听 → 不接管
+def test_external_backend_is_reused_not_taken_over(http_stub):
+    """端口上跑的**真是 Spore 应用**（401 JSON）→ 外部后端，不接管。"""
+    port = http_stub(401, "application/json;charset=UTF-8",
+                     b'{"code":40101,"message":"x","data":null}')
+    be = EmbeddedBackend(search_dirs=[], port=port)
+    assert be.start_if_needed() is False      # 已就绪 → 不接管
     assert not be.owned                       # 也没另起进程（退出时更不该去收它）
 
 
-def test_missing_jar_raises_readable_error(free_port):
+def test_foreign_listener_is_not_taken_over(listener):
+    """端口被别的进程占着（xerj）→ 不算外部后端，照流程往下走并报缺件（而不是静默复用）。"""
+    be = EmbeddedBackend(search_dirs=[], port=listener)
+    with pytest.raises(BackendError, match="war"):
+        be.start_if_needed()
+
+
+def test_missing_war_raises_readable_error(free_port):
     be = EmbeddedBackend(search_dirs=[], port=free_port)
-    with pytest.raises(BackendError, match="jar"):
+    with pytest.raises(BackendError, match="war"):
+        be.start_if_needed()
+
+
+def test_missing_tomcat_raises_readable_error(tmp_path, free_port):
+    war = tmp_path / "spore-backend-1.0.0.war"
+    war.write_bytes(b"")
+    be = EmbeddedBackend(war=war, port=free_port)
+    with pytest.raises(BackendError, match="Tomcat"):
         be.start_if_needed()
 
 
 def test_missing_java_raises_readable_error(tmp_path, free_port):
-    jar = tmp_path / "spore-backend-1.0.0.jar"
-    jar.write_bytes(b"")
-    be = EmbeddedBackend(jar=jar, java=tmp_path / "no-such-java.exe", port=free_port)
+    war = tmp_path / "spore-backend-1.0.0.war"
+    war.write_bytes(b"")
+    _fake_tomcat(tmp_path)
+    be = EmbeddedBackend(war=war, java=tmp_path / "no-such-java.exe", port=free_port)
     with pytest.raises(BackendError, match="Java"):
         be.start_if_needed()
 
 
 def test_spawn_is_windowless_and_console_lands_in_log(tmp_path, free_port):
     """拉起的子进程带 CREATE_NO_WINDOW，输出落 backend-console.log，秒退能被认出来。"""
-    jar = tmp_path / "spore-backend-1.0.0.jar"
-    jar.write_bytes(b"")
-    # 假 java = python：`python -jar …` 立刻报错退出，正好用来验「秒退」这条分支
-    be = EmbeddedBackend(jar=jar, java=Path(sys.executable), port=free_port)
+    war = tmp_path / "spore-backend-1.0.0.war"
+    war.write_bytes(b"")
+    _fake_tomcat(tmp_path)
+    # 假 java = python：拿到 ``-Dcatalina.home=…`` 会当场报错退出，正好验「秒退」分支
+    be = EmbeddedBackend(war=war, java=Path(sys.executable), port=free_port)
     assert be.start_if_needed() is True
     assert be.owned
     assert be.console_log == tmp_path / "logs" / "backend-console.log"
@@ -257,13 +418,13 @@ def test_writable_probes_without_leaving_residue(tmp_path):
     assert not (tmp_path / ".spore-write-probe").exists()  # 探针即用即删
 
 
-def test_runtime_base_keeps_jar_dir_when_writable(tmp_path):
-    # 开发态/便携目录：行为与旧版逐字节一致（./data ./logs 仍落 jar 旁）
+def test_runtime_base_keeps_war_dir_when_writable(tmp_path):
+    # 开发态/便携目录：行为与旧版逐字节一致（./data ./logs 仍落 war 旁）
     assert runtime_base(tmp_path) == tmp_path
 
 
 def test_runtime_base_falls_back_to_spore_home_when_unwritable(tmp_path, monkeypatch):
-    # Program Files 场景：jar 目录不可写 → SPORE_HOME（缺则现建）
+    # Program Files 场景：war 目录不可写 → SPORE_HOME（缺则现建）
     monkeypatch.setattr("spore_client.backend._writable", lambda d: False)
     monkeypatch.setenv("SPORE_HOME", str(tmp_path / "home"))
     out = runtime_base(Path(r"C:\Program Files (x86)\Spore-1.1.0-win64"))

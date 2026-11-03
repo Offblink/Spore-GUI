@@ -3,7 +3,7 @@ package com.offblink.spore.config;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
@@ -42,14 +42,21 @@ public class DatabaseBootstrapConfig {
 
     /**
      * 自建 DataSource：先确保库与表就位，再把控制权交给 Hikari。
-     * 取代 Spring Boot 的自动装配（@ConditionalOnMissingBean(DataSource) 会让位）。
+     * 连接三要素来自 PropertyConfig 装的属性（classpath:application.properties 打底、
+     * 本机 db.properties 覆盖）——原来 Boot 的 DataSourceProperties 自动绑定到此为止。
      */
-    @Bean
-    public DataSource dataSource(DataSourceProperties properties) {
-        String url = properties.getUrl();
-        String username = properties.determineUsername();
-        String password = properties.determinePassword();
+    @Value("${db.url}")
+    private String url;
 
+    @Value("${db.username}")
+    private String username;
+
+    @Value("${db.password}")
+    private String password;
+
+    @Bean
+    public DataSource dataSource() {
+        loadDriver();
         JdbcTarget target = JdbcTarget.parse(url);
         if (target != null) {
             createDatabaseIfAbsent(target, username, password);
@@ -59,9 +66,26 @@ public class DatabaseBootstrapConfig {
             LOG.warn("数据源地址不是 jdbc:mysql://host:port/db 形态，跳过自动建库：{}", url);
         }
 
-        return properties.initializeDataSourceBuilder()
-                .type(HikariDataSource.class)
-                .build();
+        HikariDataSource ds = new HikariDataSource();
+        ds.setJdbcUrl(url);
+        ds.setUsername(username);
+        ds.setPassword(password);
+        return ds;
+    }
+
+    /**
+     * 显式加载 JDBC 驱动。war 跑在 Tomcat 里时驱动在 {@code WEB-INF/lib}（webapp 类加载器），
+     * 而 {@code DriverManager} 首次连接时用 ServiceLoader 扫的是系统类加载器 → 扫不到，
+     * 报 {@code No suitable driver found}（Boot 时代全在系统类路径上，没这个坑）。
+     * {@code Class.forName} 触发驱动静态块自注册，之后建库脚本与 Hikari 拿的都是已注册驱动。
+     */
+    private static void loadDriver() {
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException(
+                    "找不到 MySQL 驱动 com.mysql.cj.jdbc.Driver（war 的 WEB-INF/lib 里应有 mysql-connector-j）", e);
+        }
     }
 
     /** 连到 MySQL 服务端（不选库），CREATE DATABASE IF NOT EXISTS。 */

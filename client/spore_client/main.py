@@ -66,12 +66,12 @@ def _on_wake(server: QLocalServer, app: QApplication) -> None:
     target.activateWindow()
 
 
-BACKEND_START_TIMEOUT = 60.0  # 旧 bat 同款上限；Spring 冷启动实测约 6 秒
+BACKEND_START_TIMEOUT = 90.0  # 外部 Tomcat 冷启动实测约 40s（首次展 war）/ 30s（之后）
 
 
 def _wait_backend(backend: EmbeddedBackend,
                   timeout: float = BACKEND_START_TIMEOUT) -> bool:
-    """边泵 Qt 事件边等端口就绪，返回是否就绪。
+    """边泵 Qt 事件边等应用就绪（端口 + 探活），返回是否就绪。
 
     直接阻塞 = 「双击了没反应」；给个进度小窗，界面照常响应。
     """
@@ -137,8 +137,8 @@ def _ensure_backend(app: QApplication) -> str | None:
         LOG.info("backend ready at %s:%s", backend.host, backend.port)
         return None
     if backend.alive:
-        reason = (f"后端 {BACKEND_START_TIMEOUT:.0f} 秒内没有监听 "
-                  f"{backend.host}:{backend.port}（详见 logs\\backend-console.log）")
+        reason = (f"后端 {BACKEND_START_TIMEOUT:.0f} 秒内没有就绪 "
+                  f"（{backend.host}:{backend.port}，详见 logs\\backend-console.log）")
         backend.stop()  # 卡在半路的进程别留成孤儿
     else:
         reason = "后端进程启动后立刻退出了（详见 logs\\backend-console.log）"

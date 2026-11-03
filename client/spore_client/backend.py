@@ -2,17 +2,25 @@ r"""内嵌后端：随客户端起停（取代发行包里的「启动 Spore.bat
 
 规则与旧 bat 一致，只是命令行窗口不弹了：
 
-- ``127.0.0.1:8080`` 已在监听 → 视为**外部后端**（开发态 ``mvn spring-boot:run``
-  或用户自起），只用不接管：不重复起，客户端退出也不去碰它；
-- 否则把 jar 找出来 ``java -jar`` 拉起，``CREATE_NO_WINDOW`` 保证不弹控制台窗口
-  （父进程是无控制台的 windowed exe，不加这个标记 java 会自开一个控制台）；
+- ``127.0.0.1:8080`` 已在监听**且真的是 Spore 应用** → 视为**外部后端**（开发态
+  自己跑的 Tomcat 或用户自起），只用不接管：不重复起，客户端退出也不去碰它；
+- 否则找 war + Tomcat 9，把 war 部署成 ROOT（接口前缀必须是 ``/api`` 而不是
+  ``/spore-gui/api``），再 ``org.apache.catalina.startup.Bootstrap start`` 拉起，
+  ``CREATE_NO_WINDOW`` 保证不弹控制台窗口（父进程是无控制台的 windowed exe，
+  不加这个标记 java 会自开一个控制台）；
 - 客户端退出（``aboutToQuit``）只收自己起的那个进程；另外把它挂进 Windows Job
   （``KILL_ON_JOB_CLOSE``），客户端崩溃 / ``taskkill /F`` 也一并带走——窗口已经藏了，
   进程绝不能变成没人关的孤儿。
 
-工作目录（Spring 的 ``file:./``）见 :func:`launch_dir`——发行包等于 jar 所在目录
-（= 旧 bat 的 ``cd /d "%~dp0"``），所以 ``application-local.yml``（DB 口令）、
-``./logs``、``./data`` 都落在 jar 旁；开发态在 ``target/`` 下则取仓库根。
+**就绪信号为什么不能只看端口**：外部 Tomcat 是「先绑 Connector、再部署 webapp」，
+端口通了应用可能还没部署（甚至根本起不来，比如数据库口令错），Spring Boot 那套
+「refresh 收尾才绑端口 → 端口开 = 能打接口」的保证没有了。所以 :meth:`EmbeddedBackend.ready`
+在端口通之后还要探一次 ``GET /api/storage``：只有应用真部署了才会被登录拦截器
+回成 **401 JSON**（没部署时 Tomcat 回的是 404 HTML）。
+
+工作目录见 :func:`launch_dir`——发行包等于 war 所在目录（= 旧 bat 的
+``cd /d "%~dp0"``），所以 ``db.properties``（DB 口令）、``./logs``、``./data``
+都落在 war 旁；开发态 war 在 ``target/`` 下则取仓库根。
 java 的 stdout/stderr 落 ``<工作目录>/logs/backend-console.log``——窗口没了，
 排障得有落点（每次启动截断，只留最近一次）。
 
@@ -23,12 +31,15 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import shutil
 import socket
 import struct
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
@@ -41,27 +52,48 @@ HOST = "127.0.0.1"
 PORT = 8080
 # 0x08000000 = CREATE_NO_WINDOW（subprocess 常量只在 Windows 上存在，这里写字面量）
 CREATE_NO_WINDOW = 0x08000000
-# 开发态 target/ 里可能是 sources/javadoc 包，不能当运行 jar
-JAR_EXCLUDE = ("-sources.jar", "-javadoc.jar", "-tests.jar")
+
+
+def bootstrap_cp(home: Path) -> str:
+    """Bootstrap 的 classpath：``bin/bootstrap.jar`` + ``bin/tomcat-juli.jar``（分号分隔）。"""
+    return os.pathsep.join((str(home / "bin" / "bootstrap.jar"),
+                            str(home / "bin" / "tomcat-juli.jar")))
 
 
 class BackendError(Exception):
-    """起不来（缺 jar / 缺 java / 进程秒退 / 超时）——消息可直接给人看。"""
+    """起不来（缺 war / 缺 Tomcat / 缺 java / 进程秒退 / 超时）——消息可直接给人看。"""
 
 
 def is_listening(host: str = HOST, port: int = PORT, timeout: float = 0.4) -> bool:
-    """端口通没通。
-
-    够当就绪信号：Spring Boot 的 Tomcat 在 refresh 收尾才绑定端口，
-    而数据源等单例 bean 初始化在此之前——端口开了基本就能打接口。
-    """
+    """端口通没通。**只**代表有进程占着端口，不代表应用能用——就绪判定用 :func:`probe`。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         return sock.connect_ex((host, port)) == 0
 
 
-def jar_dirs() -> list[Path]:
-    """找 jar 的目录顺序（首个含 jar 的目录胜出），去重保序。
+def probe(host: str = HOST, port: int = PORT, timeout: float = 1.0) -> bool:
+    """应用真的能打接口吗：无 token ``GET /api/storage``。
+
+    只有 Spore 应用部署成功才会被登录拦截器回成 **401 + R 包装 JSON**；
+    webapp 没起来时 Tomcat 回 404 HTML，端口被别的进程（xerj 之类）占着时
+    回的也不是这个——两者都算「没就绪」。
+    """
+    url = f"http://{host}:{port}/api/storage"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="GET"),
+                                    timeout=timeout) as resp:
+            ctype = resp.headers.get("Content-Type", "")
+            resp.read()
+            return resp.status == 401 and "json" in ctype
+    except urllib.error.HTTPError as e:
+        ctype = (e.headers or {}).get("Content-Type", "")
+        return e.code == 401 and "json" in ctype
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def war_dirs() -> list[Path]:
+    """找 war 的目录顺序（首个含 war 的目录胜出），去重保序。
 
     frozen：``sys.executable`` 是**原 exe 路径**（PyInstaller 6.17.0 实测，
     ``sys._MEIPASS`` 才是临时解压目录）；``argv[0]``/cwd 兜底（相对路径启动时
@@ -85,20 +117,85 @@ def jar_dirs() -> list[Path]:
     return out
 
 
-def find_jar(dirs: Sequence[Path] | None = None) -> Path | None:
-    """找后端 jar：发行名 ``spore-backend-*.jar`` 优先，其次按名字取最大。
+def find_war(dirs: Sequence[Path] | None = None) -> Path | None:
+    """找后端 war：发行名 ``spore-backend-*.war`` 优先，其次按名字取最大（开发态 = target/）。
 
-    ``dirs=None`` 用 :func:`jar_dirs`；``dirs=[]`` 表示「哪儿都不找」（测试用）。
+    ``dirs=None`` 用 :func:`war_dirs`；``dirs=[]`` 表示「哪儿都不找」（测试用）。
     """
-    for d in jar_dirs() if dirs is None else dirs:
+    for d in war_dirs() if dirs is None else dirs:
         if not d.is_dir():
             continue
-        jars = [p for p in d.glob("spore-*.jar") if not p.name.endswith(JAR_EXCLUDE)]
-        if not jars:
+        wars = [p for p in d.glob("spore-*.war")]
+        if not wars:
             continue
-        release = [p for p in jars if p.name.startswith("spore-backend-")]
-        return max(release or jars, key=lambda p: p.name)
+        release = [p for p in wars if p.name.startswith("spore-backend-")]
+        return max(release or wars, key=lambda p: p.name)
     return None
+
+
+def find_tomcat_home(launch: Path) -> Path | None:
+    """Tomcat 9 安装目录（= CATALINA_HOME，只读也行），三处按序找：
+
+    1. 环境变量 ``SPORE_TOMCAT``（开发机/CI 指向任意 Tomcat 9）；
+    2. ``<launch>/tomcat/``（发行包自带，最常见）；
+    3. ``<launch>/tomcat.home`` 一行文本（开发态仓库根放这个，gitignore）。
+    """
+    env = os.environ.get("SPORE_TOMCAT")
+    if env and (Path(env) / "bin" / "bootstrap.jar").is_file():
+        return Path(env)
+    bundled = launch / "tomcat"
+    if (bundled / "bin" / "bootstrap.jar").is_file():
+        return bundled
+    marker = launch / "tomcat.home"
+    if marker.is_file():
+        try:
+            home = Path(marker.read_text(encoding="utf-8").strip())
+        except OSError:
+            return None
+        if (home / "bin" / "bootstrap.jar").is_file():
+            return home
+    return None
+
+
+def prepare_base(home: Path, war: Path, base: Path) -> None:
+    """备齐 CATALINA_BASE：``conf/``（缺则从 home 拷、端口钉 8080）+ ``webapps/ROOT.war``。
+
+    必须是独立 base 而不是直接用 home：开发态的 home 往往是课程用的 Tomcat，
+    往它 webapps 里塞 ROOT.war 会把课程那套覆盖掉。
+    端口必须钉成 :data:`PORT`——客户端/手机/二维码都认 8080，home 的 conf 可能是别的端口。
+    """
+    conf = base / "conf"
+    if not (conf / "server.xml").is_file():
+        if not (home / "conf" / "server.xml").is_file():
+            raise BackendError(f"Tomcat 目录不完整：{home} 里没有 conf\\server.xml")
+        shutil.copytree(home / "conf", conf)
+    # 端口**每次启动都钉**：base 里的 server.xml 可能是旧配置/被人改过（实测踩过
+    # 残留 base 还是 18090、客户端探 8080 永远不就绪），端口不一致就等于后端没起来
+    _pin_http_port(conf / "server.xml", PORT)
+    for name in ("webapps", "logs", "temp", "work"):
+        (base / name).mkdir(parents=True, exist_ok=True)
+
+    target = base / "webapps" / "ROOT.war"
+    if not (target.is_file()
+            and target.stat().st_size == war.stat().st_size
+            and abs(target.stat().st_mtime - war.stat().st_mtime) < 2):
+        shutil.copy2(war, target)   # 覆盖后 Tomcat 下次启动按新 war 重新展开
+
+
+def _pin_http_port(server_xml: Path, port: int) -> None:
+    """把 server.xml 里第一个**没被注释掉**的 Connector 端口改成 ``port``（注释原样保留）。"""
+    text = server_xml.read_text(encoding="utf-8")
+    # 按注释切段：偶数段是正文、奇数段是 <!-- ... -->，只在正文里动刀——
+    # Tomcat 默认模板里 8443/8009 那些 Connector 都在注释里，碰了会把它们一起改掉
+    parts = re.split(r"(<!--.*?-->)", text, flags=re.S)
+    for i in range(0, len(parts), 2):
+        new, n = re.subn(r'(<Connector\s+port=")\d+(")', rf"\g<1>{port}\g<2>",
+                         parts[i], count=1)
+        if n:
+            parts[i] = new
+            server_xml.write_text("".join(parts), encoding="utf-8")
+            return
+    raise BackendError(f"{server_xml} 里找不到 HTTP Connector，无法固定端口 {port}")
 
 
 def find_java() -> Path | None:
@@ -172,14 +269,14 @@ def close_job(job: int | None) -> None:
         _k32.CloseHandle(job)
 
 
-def launch_dir(jar: Path) -> Path:
-    """java 的工作目录（= Spring 的 ``file:./``：application-local.yml / ./logs / ./data 落哪）。
+def launch_dir(war: Path) -> Path:
+    """java 的工作目录（db.properties / ./logs / ./data 落哪）。
 
-    发行包：jar 所在目录——旧 bat 的 ``cd /d "%~dp0"``。
-    开发态：jar 在 ``<仓库>/target/`` 下 → 取仓库根，跟 ``mvn spring-boot:run`` 一致
+    发行包：war 所在目录——旧 bat 的 ``cd /d "%~dp0"``。
+    开发态：war 在 ``<仓库>/target/`` 下 → 取仓库根
     （否则 ``./data`` ``./logs`` 会掉进 target/，一次 ``mvn clean`` 就没）。
     """
-    return jar.parent.parent if jar.parent.name == "target" else jar.parent
+    return war.parent.parent if war.parent.name == "target" else war.parent
 
 
 def app_home() -> Path:
@@ -218,27 +315,21 @@ def runtime_base(jar_dir: Path) -> Path:
 
 
 def config_args(launch: Path) -> list[str]:
-    """告诉 Spring 去哪读 ``application-local.yml``；两处都没有就返回空。
+    """告诉后端去哪读 ``db.properties``；没有就返回空（回落工作目录 ``./db.properties``）。
 
     **为什么必须显式指路**：``runtime_base`` 在 Program Files 下把 cwd 迁到可写根
-    （``%LOCALAPPDATA%\\Spore``），而 Spring 只按 ``file:./`` 搜**工作目录** → 放在 jar 旁的
-    口令文件读不到，回落到 jar 内置的 ``password: CHANGE_ME``，后端报
-    ``Access denied for user 'root'@'localhost'`` 秒退。1.3.1 实测：配置改对了也连不上库，
-    且手动在安装目录起后端却正常——差别只有 cwd。
+    （``%LOCALAPPDATA%\\Spore``），而属性装载默认按工作目录的 ``./db.properties`` 搜 →
+    放在 war 旁的口令文件读不到，回落 classpath 里的 ``db.password=CHANGE_ME``，后端报
+    ``Access denied for user 'root'@'localhost'`` 起不来。1.3.1 真机踩过同款
+    （当时是 application-local.yml）：配置改对了也连不上库，差别只有 cwd。
 
-    路径写法三条硬要求：``file:`` 前缀、正斜杠（反斜杠在 URI 里是转义）、结尾斜杠
-    （目录位置的写法）。绝对路径 ⇒ 与 cwd 无关，迁不迁都成立。
-    ``optional:`` 让没有该文件的安装一声不吭，缺口令照样由 Spring 自己报。
-
-    顺序 = 优先级：开发态目录在前（``src/main/resources`` 是 gitignore 敏感件、
-    Spring 原生加载点，别被 jar 同目录的意外同名件盖掉），发行态 jar 同目录在后。
-
-    口令只从文件读，**绝不进命令行**——argv 在任务管理器/wmic 里是公开的。
+    绝对路径 ⇒ 与 cwd 无关，迁不迁都成立。
+    口令只从文件读，**绝不进命令行**——argv 在任务管理器/wmic 里是公开的
+    （这里传的是文件**路径**，不是口令本身）。
     """
-    for cfg_dir in (launch / "src" / "main" / "resources", launch):
-        if (cfg_dir / "application-local.yml").is_file():
-            return ["--spring.config.additional-location=optional:file:"
-                    + cfg_dir.resolve().as_posix() + "/"]
+    cfg = launch / "db.properties"
+    if cfg.is_file():
+        return [f"-Dspore.config={cfg.resolve()}"]
     return []
 
 
@@ -264,22 +355,33 @@ def spawn_hidden(cmd: Sequence[str], cwd: Path, log: Path) -> subprocess.Popen:
 
 
 class EmbeddedBackend:
-    """一个受管的 ``java -jar`` 子进程（也可能没有：外部后端 / 缺件）。"""
+    """一个受管的 Tomcat 子进程（也可能没有：外部后端 / 缺件）。"""
 
-    def __init__(self, jar: Path | None = None, java: Path | None = None,
+    def __init__(self, war: Path | None = None, java: Path | None = None,
                  host: str = HOST, port: int = PORT,
                  search_dirs: Sequence[Path] | None = None):
-        self.jar = jar
+        self.war = war
         self.java = java
         self.host, self.port = host, port
         self._search_dirs = None if search_dirs is None else list(search_dirs)
         self.proc: subprocess.Popen | None = None
         self.console_log: Path | None = None
         self._job: int | None = None   # 持有 = 后端随客户端一起没（崩溃也算）
+        self._probe_at = 0.0           # ready() 节流：主流程每 200ms 轮询
+        self._last_probe = False
 
     # ---------- 状态 ----------
     def ready(self) -> bool:
-        return is_listening(self.host, self.port)
+        """端口通**且应用真部署了**（0.5s 节流，别把轮询打成压测）。"""
+        if not is_listening(self.host, self.port):
+            self._probe_at = 0.0
+            return False
+        now = time.monotonic()
+        if now - self._probe_at < 0.5:
+            return self._last_probe
+        self._last_probe = probe(self.host, self.port)
+        self._probe_at = now
+        return self._last_probe
 
     @property
     def alive(self) -> bool:
@@ -293,42 +395,61 @@ class EmbeddedBackend:
 
     # ---------- 起 ----------
     def start_if_needed(self) -> bool:
-        """已在监听 → False（外部后端，不接管）；拉起了 → True（要 :meth:`wait_ready`）。
+        """已在跑且真能打接口 → False（外部后端，不接管）；拉起了 → True（要 :meth:`wait_ready`）。
 
-        缺 jar / 缺 java 抛 :class:`BackendError`。
+        缺 war / 缺 Tomcat / 缺 java 抛 :class:`BackendError`。
         """
         if self.ready():
-            LOG.info("backend already listening on %s:%s → 外部后端，不接管",
+            LOG.info("backend already serving on %s:%s → 外部后端，不接管",
                      self.host, self.port)
             return False
-        jar = self.jar or find_jar(self._search_dirs)
-        if jar is None or not jar.is_file():
+        war = self.war or find_war(self._search_dirs)
+        if war is None or not war.is_file():
             raise BackendError(
-                "没找到后端 jar（spore-backend-*.jar）：请把它与 Spore.exe 放同一目录"
-                "（源码开发则先在仓库根跑 mvn clean package）。")
+                "没找到后端 war（spore-backend-*.war / target/spore-gui.war）："
+                "发行包请把它与 Spore.exe 放同一目录，源码开发则先在仓库根跑 mvn clean package。")
+        launch = launch_dir(war)
+        home = find_tomcat_home(launch)
+        if home is None:
+            raise BackendError(
+                "没找到 Tomcat 9：发行包要有 tomcat\\ 目录（与 Spore.exe 同目录）；"
+                "开发机可设环境变量 SPORE_TOMCAT，或在仓库根放一行 tomcat.home。")
         java = self.java or find_java()
         if java is None or not Path(java).is_file():
             raise BackendError("没找到 Java：请安装 JDK 8（课设口径），或把 java 加进 PATH。")
-        self.jar, self.java = jar, Path(java)
-        self._spawn(jar, Path(java))
+        self.war, self.java = war, Path(java)
+        self._spawn(war, home, Path(java))
         return True
 
-    def _spawn(self, jar: Path, java: Path) -> None:
-        # config 探测按 jar 位置（launch_dir 语义不变）；cwd/日志根走可写根——
+    def _spawn(self, war: Path, home: Path, java: Path) -> None:
+        # config 探测按 war 位置（launch_dir 语义不变）；cwd/日志根走可写根——
         # Program Files 下 exe 旁建 logs 会 WinError 5 崩启动（见 runtime_base）
-        launch = launch_dir(jar)
+        launch = launch_dir(war)
         workdir = runtime_base(launch)
+        base = workdir / "tomcat-base"
+        # 先备 base（拷 conf + 钉 8080 + 放 ROOT.war），再拉 Bootstrap
+        prepare_base(home, war, base)
         log = workdir / "logs" / "backend-console.log"
         self.console_log = log
-        self.proc = spawn_hidden(
-            [java, "-jar", jar.absolute(), *config_args(launch)], workdir, log)
+        cmd = [java,
+               f"-Dcatalina.home={home}",
+               f"-Dcatalina.base={base}",
+               f"-Djava.io.tmpdir={base / 'temp'}",
+               *config_args(launch),
+               "-cp", bootstrap_cp(home),
+               "org.apache.catalina.startup.Bootstrap", "start"]
+        self.proc = spawn_hidden(cmd, workdir, log)
         self._job = kill_on_parent_exit(self.proc)   # 失败原因已在函数里记 errno
-        LOG.info("backend spawned: pid=%s job=%s cmd='%s -jar %s' cwd=%s",
-                 self.proc.pid, self._job, java, jar.name, workdir)
+        LOG.info("backend spawned: pid=%s job=%s home=%s base=%s cwd=%s",
+                 self.proc.pid, self._job, home, base, workdir)
 
     # ---------- 等 ----------
-    def wait_ready(self, timeout: float = 60.0, poll: float = 0.2) -> bool:
-        """等端口就绪；**进程先死**立刻 False（比等满超时快，报错也更准）。"""
+    def wait_ready(self, timeout: float = 90.0, poll: float = 0.2) -> bool:
+        """等**应用**就绪（端口 + 探活）；**进程先死**立刻 False（比等满超时快，报错也更准）。
+
+        上限 90s：外部 Tomcat 冷启动要展开 war + 起父容器 + 起 DispatcherServlet，
+        实测首次约 40s、之后约 30s（Boot 时代只要 6 秒，这是换外部容器的代价）。
+        """
         deadline = time.monotonic() + timeout
         while True:
             if self.ready():

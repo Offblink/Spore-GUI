@@ -6,9 +6,9 @@
 
 红线（任一不过 → 退出码 1）：
 1. zip 外层没有任何 .bat；
-2. application-local.yml（真实 DB 口令文件）在任何层级都不许出现——
-   含嵌套 jar 再钻一层（v1.1.1 就是 jar 内嵌它进了公开 release）；.example 模板除外；
-3. 本机 application-local.yml 里的真实口令不出现在任何 entry 字节里；
+2. db.properties（真实 DB 口令文件）在任何层级都不许出现——
+   含嵌套 jar/war 再钻一层（v1.1.1 就是 jar 内嵌它进了公开 release）；.example 模板除外；
+3. 本机 db.properties 里的真实口令不出现在任何 entry 字节里；
    必须打印「待检口令 N 个」且 N>=1——N=0 = 基线没提取到 = 检查空转，按 FAIL 算；
 4. 关键件抽查分两层（onedir 形态决定的，别混）：
    - 磁盘层 = zip 路径：_internal 里的资产/Qt/OCR 模型与原生件；
@@ -32,7 +32,7 @@ from pathlib import Path
 CLIENT = Path(__file__).resolve().parents[1]        # client/
 REPO = CLIENT.parent                                 # 仓库根
 DIST = CLIENT / "dist"
-LOCAL_YML = REPO / "src" / "main" / "resources" / "application-local.yml"
+DB_PROPS = REPO / "db.properties"
 
 # 磁盘层标记：子串必须至少命中一条 zip entry 路径
 DISK_MARKERS = (
@@ -56,10 +56,10 @@ def version() -> str:
 
 def extract_secrets() -> list[str]:
     """从本机口令文件提取所有 password 值（不回显）。"""
-    if not LOCAL_YML.is_file():
-        sys.exit(f"FAIL  读不到基线口令文件：{LOCAL_YML}（没基线 = 检查空转）")
-    text = LOCAL_YML.read_text(encoding="utf-8")
-    found = re.findall(r"(?im)^\s*[\w.-]*password\s*:\s*(.+?)\s*$", text)
+    if not DB_PROPS.is_file():
+        sys.exit(f"FAIL  读不到基线口令文件：{DB_PROPS}（没基线 = 检查空转）")
+    text = DB_PROPS.read_text(encoding="utf-8")
+    found = re.findall(r"(?im)^[\w.-]*password\s*=\s*(.+?)\s*$", text)
     out: set[str] = set()
     for v in found:
         v = v.split(" #", 1)[0].strip().strip("'\"")   # 去行尾注释与引号
@@ -70,14 +70,14 @@ def extract_secrets() -> list[str]:
 
 def scan_bytes(data: bytes, secrets: list[bytes], where: str,
                depth: int, problems: list[str]) -> None:
-    """扫一段字节：查口令、查 application-local.yml；jar 内再钻一层。"""
+    """扫一段字节：查口令、查 db.properties；jar/war 内再钻一层。"""
     base = where.rsplit("/", 1)[-1]
-    if base.lower() == "application-local.yml":
-        problems.append(f"发现 application-local.yml：{where}")
+    if base.lower() == "db.properties":
+        problems.append(f"发现 db.properties：{where}")
     for i, s in enumerate(secrets, 1):
         if s in data:
             problems.append(f"口令 #{i} 出现在 {where}")
-    if depth < 4 and base.lower().endswith(".jar"):
+    if depth < 4 and base.lower().endswith((".jar", ".war")):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as z2:
                 for info2 in z2.infolist():
@@ -114,7 +114,7 @@ def main() -> int:
         sys.exit(f"FAIL  缺发行 zip：{zip_path}（先跑 tools/make_release_bundle.py）")
 
     secrets = [s.encode("utf-8") for s in extract_secrets()]
-    print(f"待检口令 {len(secrets)} 个（来源 {LOCAL_YML.name}，只比对不回显）")
+    print(f"待检口令 {len(secrets)} 个（来源 {DB_PROPS.name}，只比对不回显）")
     if len(secrets) < 1:
         print("FAIL  待检口令 0 个：基线口令没提取到，检查会空转")
         return 1

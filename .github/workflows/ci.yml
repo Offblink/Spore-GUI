@@ -34,7 +34,7 @@ jobs:
         working-directory: client
         run: python -m pytest tests
 
-  # 后端（Spring Boot 2.7 / source 8）：JDK 17 可编；仓库无后端测试，包出即绿。
+  # 后端（严格 SSM 的 war / source 8）：JDK 17 可编；仓库无后端测试，包出即绿。
   backend:
     runs-on: ubuntu-latest
     steps:
@@ -47,5 +47,5 @@ jobs:
           java-version: '17'
           cache: maven
 
-      - name: Build backend jar
+      - name: Build backend war
         run: mvn -B package

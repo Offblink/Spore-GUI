@@ -4,7 +4,7 @@ data/
 .idea/
 *.iml
 *.class
-application-local.yml
+db.properties
 device.token
 
 # Python 客户端（client/）
@@ -24,3 +24,5 @@ herstory/
 
 # 打包时由 tools/make_icon.py 重生成（勿与 spore_client/assets 混淆）
 client/assets/
+tomcat-base/
+tomcat.home
