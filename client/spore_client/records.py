@@ -942,6 +942,17 @@ class RecordsPane(QWidget):
             "QPushButton:hover{background:#f2f4fb; color:#1a1d2e;}")
         bcancel.clicked.connect(lambda: self._set_selecting(False))
         btop.addWidget(self._sel_label, 1)
+        # 全选：作用于当前可见（过滤后）的会话，再点一次 = 取消全选
+        self.batch_sel_all = QPushButton("全选")
+        self.batch_sel_all.setCursor(Qt.PointingHandCursor)
+        self.batch_sel_all.setStyleSheet(
+            "QPushButton{background:transparent; border:none; color:#c2185b;"
+            " font-size:13px; font-weight:600; border-radius:8px;"
+            " padding:3px 8px;}"
+            "QPushButton:hover{background:#fff0f7;}"
+            "QPushButton:disabled{color:#b6bcd3;}")
+        self.batch_sel_all.clicked.connect(self._toggle_select_all)
+        btop.addWidget(self.batch_sel_all)
         btop.addWidget(bcancel)
         bv.addLayout(btop)
         bops = QHBoxLayout()
@@ -1619,11 +1630,33 @@ class RecordsPane(QWidget):
     def _toggle_multi(self, card):
         self._set_checked(card, card._id not in self._multi)
 
+    def _visible_ids(self) -> set[str]:
+        """当前可见（过滤后、且真的渲染成行）的会话 id——全选只作用在这上面。"""
+        return {str(r.get("id")) for r in self._filtered()
+                if r.get("id") is not None}
+
+    def _toggle_select_all(self):
+        """全选 / 取消全选：只动可见行，跨筛选的既有选中按原口径保留。"""
+        ids = self._visible_ids()
+        if not ids:
+            return
+        if ids <= self._multi:
+            self._multi -= ids
+        else:
+            self._multi |= ids
+        for card in self._session_cards:
+            card.set_checked(card._id in self._multi)
+        self._sync_sel_chrome()
+
     def _sync_sel_chrome(self):
         n = len(self._multi)
         self._sel_label.setText(f"已选 {n} 项")
         for b in (self.batch_fav, self.batch_move, self.batch_del):
             b.setEnabled(n > 0)
+        vis = self._visible_ids()
+        self.batch_sel_all.setEnabled(bool(vis))
+        self.batch_sel_all.setText(
+            "取消全选" if vis and vis <= self._multi else "全选")
 
     # ---------- 批量操作（多选底栏；语义照 mobile bFav/bMove/bDel） ----------
     def _selected_rows(self) -> list[dict]:

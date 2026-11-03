@@ -361,6 +361,43 @@ def test_paint_range_selects_and_reverses_on_backtrack(qapp):
     assert pane._multi == {"s0", "s1", "s2", "s3", "s4"}
 
 
+def test_select_all_toggles_visible_rows(qapp):
+    """全选按钮：可见行全勾 → 再点全清；文案与计数随态切换（2026-11-03 新增）。"""
+    pane = _multi_pane(qapp, rows=4)
+    pane._set_selecting(True)
+    assert pane.batch_sel_all.text() == "全选"
+
+    pane.batch_sel_all.click()
+    assert pane._multi == {"s0", "s1", "s2", "s3"}
+    assert pane.batch_sel_all.text() == "取消全选"
+    assert pane._sel_label.text() == "已选 4 项"
+    assert all(c._checked for c in pane._session_cards)   # 卡片勾选态同步
+    assert pane.batch_fav.isEnabled()
+
+    pane.batch_sel_all.click()                          # 再点 = 取消全选
+    assert pane._multi == set()
+    assert pane.batch_sel_all.text() == "全选"
+    assert not any(c._checked for c in pane._session_cards)
+    assert not pane.batch_fav.isEnabled()
+
+
+def test_select_all_only_covers_filtered_rows(qapp):
+    """全选只作用于当前可见（检索态）：命中那条被勾，别的一律不动。"""
+    pane = _multi_pane(qapp, rows=4)
+    pane.search.setText("会话2")
+    pane._do_search()              # 换检索会先退多选（既有口径）→ 先过滤、再进模式
+    assert len(pane._session_cards) == 1                # 预设：只剩命中行
+    pane._set_selecting(True)
+
+    pane.batch_sel_all.click()
+    assert pane._multi == {"s2"}                        # 只勾可见那条（会话2 = s2）
+    assert pane.batch_sel_all.text() == "取消全选"
+    assert pane._sel_label.text() == "已选 1 项"
+
+    pane.batch_sel_all.click()
+    assert pane._multi == set()                         # 取消全选也只动可见行
+
+
 def test_batch_fav_flips_selected_rows(qapp):
     pane = _multi_pane(qapp)
     calls: list = []
