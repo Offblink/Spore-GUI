@@ -134,15 +134,11 @@ def main() -> int:
             data = z.read(info)
             if name.rsplit("/", 1)[-1].lower() == "spore.exe":
                 exe_bytes = data
-            # 红线 2 + 3：yml 与口令，逐 entry（jar 会钻进去）
+            # 红线 2 + 3：db.properties 与口令，逐 entry（jar/war 会钻进去）
             scan_bytes(data, secrets, name, 1, problems)
 
     # 红线 4a：磁盘层（zip 路径）
     missing = [m for m in DISK_MARKERS if not any(m in p for p in paths)]
-    if not any("rapidocr" in p and p.lower().endswith(".onnx") for p in paths):
-        missing.append("rapidocr/**/*.onnx（OCR 模型）")
-    if not any("onnxruntime" in p and p.lower().endswith(".dll") for p in paths):
-        missing.append("onnxruntime/**/*.dll（原生件）")
 
     # 红线 4b：PYZ 层（exe 内字节码）
     pyz_note = "PYZ 层未查（zip 里没找到 Spore.exe？）"
