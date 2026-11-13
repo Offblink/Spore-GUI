@@ -30,10 +30,10 @@ VENV_PY = ROOT / ".venv-build" / "Scripts" / "python.exe"
 BASE_PY = Path.home() / "AppData/Local/Programs/Python/Python313/python.exe"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
-# 到窗口的阈值（秒）：2026-10-11 本机实测——热态到窗口 2.15/2.28/2.70s，首启
-# （Defender 扫新构建的 355MB 目录）11.8s。15s 对冷启留 ~3s 余量，够用；进程先死
-# 会立刻失败（不再像旧版固定睡满 15s）。冷启明显变慢再调这个数
-WINDOW_TIMEOUT = 15
+# 到窗口的阈值（秒）：热态 ~2s，Defender 首扫新构建目录 6–12s（2026-11-13 实测
+# 一次 8.3s 到主窗，叠加枚举轮询后被 15s 阈值误杀）。30s 给冷启留足余量；
+# 进程先死会立刻失败，不会白等。
+WINDOW_TIMEOUT = 30
 
 
 def version() -> str:
