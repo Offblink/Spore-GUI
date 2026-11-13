@@ -33,37 +33,91 @@ from qfluentwidgets import (
     CaptionLabel,
     LineEdit,
     PushButton,
+    SegmentedWidget,
     SpinBox,
     SwitchButton,
 )
 
-from . import settings_store
+from . import settings_store, theme
 from .answer.llm import stream_chat
 from .answer.settings import LlmSettings
 from .store import Store
 
-# ---- 卡片/字段样式（options.html :44-97 同款） ----
-CARD_STYLE = (
-    "QFrame#card { background: #fff; border: 1px solid #e6e8f2;"
-    " border-radius: 16px; }"
-)
-INPUT_STYLE = (
-    "LineEdit { border: 1px solid #e6e8f2; border-radius: 10px;"
-    " background: #fafbfe; padding: 5px 9px; font-size: 13.5px; color: #1a1d2e; }"
-    "LineEdit:focus { border: 1px solid #ec4899; background: #fff; }"
-    "LineEdit:read-only { color: #4a4f6b; }"
-)
-BTN2_STYLE = (
-    "QPushButton { background: #f1f3fb; color: #4a4f6b; border: none;"
-    " border-radius: 10px; padding: 7px 18px; font-weight: 600; font-size: 13px; }"
-    "QPushButton:hover { background: #e8ebf7; }"
-    "QPushButton:pressed { background: #dde1f2; }"
-    "QPushButton:disabled { background: #f4f5fa; color: #a3a8c2; }"
-)
-TITLE_STYLE = "font-size: 16px; font-weight: 650; color: #1a1d2e;"
-LABEL_STYLE = "font-size: 11.5px; color: #7c819c; font-weight: 600;"
-HINT_STYLE = "font-size: 12.5px; color: #7c819c;"
-SUBHEAD_STYLE = "font-size: 13.5px; font-weight: 650; color: #2b2f4a;"
+
+# ---- 卡片/字段样式（options.html :44-97 同款；色号一律走 theme 调色板） ----
+def card_style(c: theme.Palette) -> str:
+    return theme.qss("QFrame#card { background: $surface;"
+                     " border: 1px solid $line; border-radius: 16px; }", c)
+
+
+def input_style(c: theme.Palette) -> str:
+    return theme.qss(
+        "LineEdit { border: 1px solid $line; border-radius: 10px;"
+        " background: $input_bg; padding: 5px 9px; font-size: 13.5px;"
+        " color: $ink; }"
+        "LineEdit:focus { border: 1px solid $accent; background: $surface; }"
+        "LineEdit:read-only { color: $ink_3; }", c)
+
+
+def btn2_style(c: theme.Palette) -> str:
+    return theme.qss(
+        "QPushButton { background: $surface_3; color: $ink_3; border: none;"
+        " border-radius: 10px; padding: 7px 18px; font-weight: 600;"
+        " font-size: 13px; }"
+        "QPushButton:hover { background: $surface_4; }"
+        "QPushButton:pressed { background: $surface_press; }"
+        "QPushButton:disabled { background: $surface_disabled;"
+        " color: $ink_5; }", c)
+
+
+def title_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 16px; font-weight: 650; color: $ink;", c)
+
+
+def label_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 11.5px; color: $ink_4;"
+                     " font-weight: 600;", c)
+
+
+def hint_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 12.5px; color: $ink_4;", c)
+
+
+def subhead_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 13.5px; font-weight: 650; color: $ink_2;", c)
+
+
+def setting_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 13.5px; color: $ink_2;"
+                     " font-weight: 400;", c)
+
+
+def kbd_style(c: theme.Palette) -> str:
+    return theme.qss(
+        "QLabel { background: $surface_2; border: 1px solid $line;"
+        " border-bottom: 2px solid $line; border-radius: 6px;"
+        " padding: 2px 7px; color: $ink;"
+        " font-family: 'Cascadia Code', Consolas, monospace;"
+        " font-size: 12px; }", c)
+
+
+def divider_style(c: theme.Palette) -> str:
+    return theme.qss("background: $line;", c)
+
+
+def msg_style(c: theme.Palette, kind: bool | None) -> str:
+    """测试连接回显：True 成功 / False 失败 / None 中性（探测中）。"""
+    if kind is True:
+        color = c.success
+    elif kind is False:
+        color = c.danger
+    else:
+        color = c.ink_4
+    return theme.qss("font-size: 12.5px; color: $color;", c, color=color)
+
+
+def danger_hint_style(c: theme.Palette) -> str:
+    return theme.qss("font-size: 12.5px; color: $danger;", c)
 
 
 def build_card(title: str, hint: str | None = None,
@@ -71,17 +125,17 @@ def build_card(title: str, hint: str | None = None,
     """白底圆角卡 → (card, layout, title_label)；trailing = 卡头右侧控件。"""
     card = QFrame()
     card.setObjectName("card")
-    card.setStyleSheet(CARD_STYLE)
+    theme.style(card, card_style)
     lay = QVBoxLayout(card)
     lay.setContentsMargins(22, 20, 22, 20)
     lay.setSpacing(10)
     t = QLabel(title)
-    t.setStyleSheet(TITLE_STYLE)
+    theme.style(t, title_style)
     h = None
     if hint:
         h = QLabel(hint)
         h.setWordWrap(True)
-        h.setStyleSheet(HINT_STYLE)
+        theme.style(h, hint_style)
     if trailing is None:
         lay.addWidget(t)
         if h is not None:
@@ -100,8 +154,9 @@ def build_card(title: str, hint: str | None = None,
     shadow = QGraphicsDropShadowEffect(card)
     shadow.setBlurRadius(52)
     shadow.setOffset(0, 8)
-    shadow.setColor(QColor(20, 24, 48, 13))
+    shadow.setColor(QColor(*theme.current().shadow))
     card.setGraphicsEffect(shadow)
+    theme.hook(card, lambda: shadow.setColor(QColor(*theme.current().shadow)))
     return card, lay, t
 
 
@@ -109,14 +164,14 @@ def field_label(text: str) -> QLabel:
     """字段 label：11.5px muted（options.html label 同款）。"""
     lab = QLabel(text)
     lab.setWordWrap(True)
-    lab.setStyleSheet(LABEL_STYLE)
+    theme.style(lab, label_style)
     return lab
 
 
 def hint_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setWordWrap(True)
-    lab.setStyleSheet(HINT_STYLE)
+    theme.style(lab, hint_style)
     return lab
 
 
@@ -124,31 +179,27 @@ def setting_label(text: str) -> QLabel:
     """开关行左侧标题（2026-10-03 反馈：灰色小字不对，用正常正文字号字色）。"""
     lab = QLabel(text)
     lab.setWordWrap(True)
-    lab.setStyleSheet("font-size: 13.5px; color: #2b2f4a; font-weight: 400;")
+    theme.style(lab, setting_style)
     return lab
 
 
 def kbd_badge(text: str) -> QLabel:
-    """kbd 徽标：底 #f4f6fd、1px 边框、底边 2px、圆角 6、等宽 12px。"""
+    """kbd 徽标：底 surface-2、1px 边框、底边 2px、圆角 6、等宽 12px。"""
     lab = QLabel(text)
-    lab.setStyleSheet(
-        "QLabel { background: #f4f6fd; border: 1px solid #e6e8f2;"
-        " border-bottom: 2px solid #e6e8f2; border-radius: 6px;"
-        " padding: 2px 7px; color: #1a1d2e;"
-        " font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px; }")
+    theme.style(lab, kbd_style)
     return lab
 
 
 def _divider() -> QFrame:
     line = QFrame()
     line.setFixedHeight(1)
-    line.setStyleSheet("background: #e6e8f2;")
+    theme.style(line, divider_style)
     return line
 
 
 def _sub_head(text: str) -> QLabel:
     lab = QLabel(text)
-    lab.setStyleSheet(SUBHEAD_STYLE)
+    theme.style(lab, subhead_style)
     return lab
 
 
@@ -231,14 +282,31 @@ class SettingsPane(QWidget):
 
         self.cards: dict[str, QLabel] = {}
 
-        # ================= 卡一：模型 =================
+        # ================= 卡一：外观（即时生效，不用保存） =================
+        # 档位与移动端设置页同口径（system|light|dark），落 ui_settings.theme
+        card, lay, _ = build_card(
+            "外观", "浅色 = 孢子粉，深色 = Fungi 青；点一下立即换，所有页面同步")
+        self.theme_seg = SegmentedWidget()
+        self.theme_seg.setObjectName("themeSeg")
+        for key, text in (("system", "跟随系统"), ("light", "浅色"),
+                          ("dark", "深色")):
+            self.theme_seg.addItem(key, text)
+        self.theme_seg.setCurrentItem(theme.mode())
+        self.theme_seg.setFixedWidth(330)      # 移动端是紧凑药丸，别拉满整卡
+        self.theme_seg.currentItemChanged.connect(self._theme_picked)
+        lay.addWidget(self.theme_seg, 0, Qt.AlignLeft)
+        # 档位也可能被别处改（系统跟随时解析值变化）——分段控件别停在旧档
+        theme.hook(self, self._sync_theme_seg)
+        stack.addWidget(card)
+
+        # ================= 卡二：模型 =================
         card, lay, title = build_card("模型")
         self.cards["model"] = title
 
         lay.addWidget(field_label("模型 endpoint（OpenAI 兼容）"))
         self.endpoint_edit = LineEdit()
         self.endpoint_edit.setObjectName("endpointEdit")
-        self.endpoint_edit.setStyleSheet(INPUT_STYLE)
+        theme.style(self.endpoint_edit, input_style)
         self.endpoint_edit.textChanged.connect(
             lambda t: self._model_changed("endpoint", t.strip()))
         lay.addWidget(self.endpoint_edit)
@@ -249,14 +317,14 @@ class SettingsPane(QWidget):
         self.key_edit = LineEdit()
         self.key_edit.setObjectName("keyEdit")
         self.key_edit.setEchoMode(QLineEdit.Password)
-        self.key_edit.setStyleSheet(INPUT_STYLE)
+        theme.style(self.key_edit, input_style)
         self.key_edit.returnPressed.connect(self._save_key)
         lay.addWidget(self.key_edit)
 
         lay.addWidget(field_label("模型名"))
         self.model_edit = LineEdit()
         self.model_edit.setObjectName("modelEdit")
-        self.model_edit.setStyleSheet(INPUT_STYLE)
+        theme.style(self.model_edit, input_style)
         self.model_edit.textChanged.connect(
             lambda t: self._model_changed("model", t.strip()))
         lay.addWidget(self.model_edit)
@@ -273,7 +341,7 @@ class SettingsPane(QWidget):
         lay.addWidget(field_label("检索代理（可选）"))
         self.proxy_edit = LineEdit()
         self.proxy_edit.setObjectName("proxyEdit")
-        self.proxy_edit.setStyleSheet(INPUT_STYLE)
+        theme.style(self.proxy_edit, input_style)
         self.proxy_edit.setPlaceholderText("如 127.0.0.1:7897")
         self.proxy_edit.textChanged.connect(
             lambda t: self._model_changed("proxy", t.strip()))
@@ -330,7 +398,7 @@ class SettingsPane(QWidget):
         self.probe_msg = QLabel("")
         self.probe_msg.setObjectName("probeMsg")
         self.probe_msg.setWordWrap(True)
-        self.probe_msg.setStyleSheet(HINT_STYLE)
+        theme.style(self.probe_msg, msg_style, None)
         row.addWidget(self.probe_btn)
         row.addWidget(self.probe_msg, 1)
         lay.addLayout(row)
@@ -340,7 +408,7 @@ class SettingsPane(QWidget):
         self._err_hint = None
         if self.llm.errors:
             err = hint_label("；".join(self.llm.errors))
-            err.setStyleSheet("font-size: 12.5px; color: #d02747;")
+            theme.style(err, danger_hint_style)
             lay.addWidget(err)
             self._err_hint = err
         stack.addWidget(card)
@@ -384,8 +452,7 @@ class SettingsPane(QWidget):
         data = settings_store.read()
         data["panelFixed"] = bool(on)
         settings_store.write(data)
-        self.status.setText("已自动保存")
-        QTimer.singleShot(2200, self._clear_saved_hint)
+        self._flash_status("已自动保存")
 
     def _save_key(self):
         """粘贴新 key 回车 → 覆盖保存（永不回显；空输入只刷新状态行）。"""
@@ -397,8 +464,7 @@ class SettingsPane(QWidget):
             self._sync_key_ui()
             self._sync_probe_btn()
             self._touch()
-        self.status.setText("已自动保存")
-        QTimer.singleShot(2200, self._clear_saved_hint)
+        self._flash_status("已自动保存")
 
     def _clear_key_error(self):
         """key 到位 → 启动期灌进 errors 的「API key 未设置」当场撤（错误列表与页面
@@ -433,12 +499,27 @@ class SettingsPane(QWidget):
         data = settings_store.read()
         data.update(self._collect())
         settings_store.write(data)        # 白名单落盘（含 apiKey，2026-10-03 拍板）
-        self.status.setText("已自动保存")
-        QTimer.singleShot(2200, self._clear_saved_hint)
+        self._flash_status("已自动保存")
 
-    def _clear_saved_hint(self):
-        if self.status.text() == "已自动保存":
-            self.status.setText("")
+    def _flash_status(self, text: str):
+        """底部一行状态：2.2s 后自动清（期间被别的文案顶掉就不动它）。"""
+        self.status.setText(text)
+        QTimer.singleShot(2200, lambda: (self.status.text() == text
+                                         and self.status.setText("")))
+
+    # ---------- 外观（即时生效，不用保存按钮） ----------
+    def _sync_theme_seg(self):
+        key = theme.mode()
+        if self.theme_seg.currentRouteKey() != key:
+            self.theme_seg.blockSignals(True)   # 回填不许触发 currentItemChanged
+            self.theme_seg.setCurrentItem(key)
+            self.theme_seg.blockSignals(False)
+
+    def _theme_picked(self, key: str):
+        """设置页分段点一下：落盘 + 全应用换肤（同移动端 themeSet 桥）。"""
+        resolved = theme.set_mode(key)
+        self._flash_status("外观已切换：" + ("深色" if resolved == "dark"
+                                            else "浅色"))
 
     # ---------- 测试连接 ----------
     def _sync_probe_btn(self):
@@ -446,20 +527,18 @@ class SettingsPane(QWidget):
         self.probe_btn.setEnabled(
             bool(self.llm.endpoint and self.llm.api_key and self.llm.model))
 
-    def _set_probe_msg(self, text: str, color: str):
-        self.probe_msg.setStyleSheet(f"font-size: 12.5px; color: {color};")
+    def _set_probe_msg(self, text: str, ok: bool | None = None):
+        theme.style(self.probe_msg, msg_style, ok)
         self.probe_msg.setText(text)
 
     def _probe(self):
         if self._probe_task is not None and self._probe_task.isRunning():
             return                       # 上一发还在飞，忽略连点
         if not (self.llm.endpoint and self.llm.api_key and self.llm.model):
-            self._set_probe_msg("endpoint / key / model 都要填", "#d02747")
+            self._set_probe_msg("endpoint / key / model 都要填", False)
             return
-        self._set_probe_msg("探测中…", "#7c819c")
+        self._set_probe_msg("探测中…")
         self._probe_task = _ProbeTask(self.llm.endpoint, self.llm.api_key,
                                  self.llm.model, self)
-        self._probe_task.done.connect(
-            lambda msg, ok: self._set_probe_msg(
-                msg, "#0f9d58" if ok else "#d02747"))
+        self._probe_task.done.connect(self._set_probe_msg)
         self._probe_task.start()

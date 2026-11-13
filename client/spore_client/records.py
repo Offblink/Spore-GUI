@@ -55,6 +55,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QEnterEvent,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
 )
@@ -80,6 +81,7 @@ from qfluentwidgets import (
     SearchLineEdit,
 )
 
+from . import theme
 from .answer.session import Session, msgs_of
 from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
 from .store import Store, StoreError
@@ -90,7 +92,250 @@ FETCH_SIZE = 200        # 记录页一次拉最近 200 条（分组/检索在客
 # 主窗 turn-end 落库后 RecordsPane.mark_unread()，点开即 discard ——
 # 记录页会话行与回答面板 💬 会话行共用这一份（MV3 unread 红点同语义）。
 UNREAD: set[str] = set()
-ACCENT = "#ec4899"
+
+
+# ---------------------------------------------------------------- 样式
+# 色号一律走 theme 调色板（浅/深两套见 theme.LIGHT / theme.DARK）。
+# 静态控件用 theme.style() 绑定，换主题自动重刷；靠数据的部分（会话行、
+# 右栏富文本）由 RecordsPane._on_theme() 重渲。
+
+def sidebar_style(c) -> str:
+    return theme.qss("#sidebar{background:$surface;"
+                     "border-right:1px solid $line;}", c)
+
+
+def seg_track_style(c) -> str:
+    return theme.qss("#segBox{background:$surface_2; border-radius:10px;}", c)
+
+
+def seg_btn_style(c, on: bool) -> str:
+    return theme.qss(
+        "QPushButton{background:$bg; color:$fg; border:none;"
+        " border-radius:8px; font-size:13px; font-weight:600;}", c,
+        bg=c.surface if on else "transparent", fg=c.ink if on else c.ink_3)
+
+
+def dashed_btn_style(c) -> str:
+    """虚线小按钮（＋新建科目 / 批量选择）。"""
+    return theme.qss(
+        "QPushButton{border:1px dashed $line; border-radius:10px;"
+        " padding:8px; color:$ink_3; font-size:13.5px; background:transparent;}"
+        "QPushButton:hover{background:$accent_soft; border-color:$accent;"
+        " color:$accent;}", c)
+
+
+def tree_hint_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_5; font-size:12.5px;"
+                     " background:transparent; padding:14px 6px;}", c)
+
+
+def batch_bar_style(c) -> str:
+    return theme.qss("#batchBar{background:$surface;"
+                     " border-top:1px solid $line;}", c)
+
+
+def sel_count_style(c) -> str:
+    return theme.qss("QLabel{color:$accent_deep; font-size:13px;"
+                     " font-weight:600; background:transparent;}", c)
+
+
+def ghost_btn_style(c) -> str:
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; color:$ink_4;"
+        " font-size:13px; border-radius:8px; padding:3px 8px;}"
+        "QPushButton:hover{background:$surface_2; color:$ink;}", c)
+
+
+def link_btn_style(c) -> str:
+    """批量栏「全选 / 取消全选」。"""
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; color:$accent_deep;"
+        " font-size:13px; font-weight:600; border-radius:8px;"
+        " padding:3px 8px;}"
+        "QPushButton:hover{background:$accent_tint;}"
+        "QPushButton:disabled{color:$ink_6;}", c)
+
+
+def batch_op_style(c) -> str:
+    return theme.qss(
+        "QPushButton{background:$surface_2; border:none; border-radius:9px;"
+        " padding:7px 0; font-size:13px; font-weight:600; color:$ink_3;}"
+        "QPushButton:hover{background:$surface_4;}"
+        "QPushButton:disabled{color:$ink_6;}", c)
+
+
+def batch_del_style(c) -> str:
+    return batch_op_style(c) + theme.qss(
+        "QPushButton:hover{background:$danger_bg; color:$danger;}", c)
+
+
+def main_box_style(c) -> str:
+    return theme.qss("#mainBox{background:$bg;}", c)
+
+
+def hint_lbl_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_5; font-size:14px;"
+                     " background:transparent; padding:40px 0;}", c)
+
+
+def shot_style(c) -> str:
+    return theme.qss("border:1px solid $line; border-radius:12px;"
+                     " background:$bg;", c)
+
+
+def body_style(c) -> str:
+    return theme.qss("QTextBrowser{background:$surface; border:none;}", c)
+
+
+def soft_btn_style(c) -> str:
+    """「核实一下」这类浅底按钮。"""
+    return theme.qss(
+        "QPushButton{background:$surface_3; color:$ink_3; border:none;"
+        " border-radius:10px; padding:6px 14px; font-weight:600;"
+        " font-size:13.5px;}"
+        "QPushButton:hover{background:$surface_4;}", c)
+
+
+def cancel_btn_style(c) -> str:
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; font-size:16px;"
+        " color:$ink_5; border-radius:10px;}"
+        "QPushButton:hover{background:$danger_bg; color:$danger;}", c)
+
+
+def star_btn_style(c, on: bool) -> str:
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; color:$fg;"
+        " font-size:18px; border-radius:6px;}"
+        "QPushButton:hover{background:$surface_3; color:$accent_strong;}", c,
+        fg=c.accent if on else c.ink_6)
+
+
+def star_row_style(c, on: bool) -> str:
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; color:$fg;"
+        " font-size:16px; border-radius:6px;}"
+        "QPushButton:hover{color:$accent_strong;}", c,
+        fg=c.accent if on else c.ink_6)
+
+
+def time_style(c) -> str:
+    return theme.qss("QLabel{font-size:11.5px; color:$ink_5;"
+                     " background:transparent;}", c)
+
+
+def elided_style(c, size: float, color: str, weight: str) -> str:
+    return theme.qss(
+        "QLabel{font-size:${size}px; color:$color; font-weight:$weight;"
+        " background:transparent;}", c, size=str(size), color=color,
+        weight=weight)
+
+
+def folder_style(c) -> str:
+    return theme.qss("background:$marker; border-radius:2px;", c)
+
+
+def check_box_style(c, checked: bool) -> str:
+    if checked:
+        return theme.qss(
+            "QLabel{background:$accent; border:1.5px solid $accent;"
+            " border-radius:8px; color:$on_accent; font-size:10px;"
+            " font-weight:700;}", c)
+    return theme.qss(
+        "QLabel{background:$surface; border:1.5px solid $line_strong;"
+        " border-radius:8px;}", c)
+
+
+def unread_dot_style(c) -> str:
+    return theme.qss("QLabel{background:$accent; border-radius:4px;}", c)
+
+
+def session_card_style(c, state: str) -> str:
+    """会话行底色：多选勾选 / 右栏正看 / 收藏 / 普通（MV3 .rrow 同款语义）。"""
+    if state == "checked":
+        bg, hover = c.accent_tint, c.accent_soft_2
+    elif state == "sel":
+        bg, hover = c.accent_soft, c.accent_soft_2
+    elif state == "fav":
+        bg, hover = c.warn_bg, c.surface_2
+    else:
+        bg, hover = "transparent", c.surface_2
+    return theme.qss(
+        "QFrame#sessionCard{background:$bg; border-radius:12px;}"
+        "QFrame#sessionCard:hover{background:$hover;}", c,
+        bg=bg, hover=hover)
+
+
+def cat_row_style(c, sel: bool) -> str:
+    return theme.qss(
+        "QFrame#catRow{background:$bg; border-radius:10px;}"
+        "QFrame#catRow:hover{background:$surface_2;}", c,
+        bg=c.accent_soft if sel else "transparent")
+
+
+def icon_btn_style(c, danger: bool = False) -> str:
+    """会话行 hover 才显的 ✎ ⇄ × 小按钮。"""
+    hover_bg, hover_fg = ((c.danger_bg, c.danger) if danger
+                          else (c.surface_3, c.ink_3))
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; font-size:${size}px;"
+        " color:$ink_5; border-radius:6px;}"
+        "QPushButton:hover{background:$hover_bg; color:$hover_fg;}", c,
+        size="15" if danger else "14", hover_bg=hover_bg, hover_fg=hover_fg)
+
+
+def dialog_style(c) -> str:
+    return theme.qss(
+        "QDialog{background:$surface; border-radius:16px;}"
+        "QLineEdit{border:1px solid $line; border-radius:10px;"
+        " padding:9px 11px; background:$input_bg; font-size:14px; color:$ink;}"
+        "QLineEdit:focus{border:1px solid $accent; background:$surface;}"
+        "QPushButton{border:none; border-radius:11px; padding:9px 20px;"
+        " font-weight:600; font-size:14px;}"
+        "QPushButton#cancel{background:$surface_3; color:$ink_3;}"
+        "QPushButton#cancel:hover{background:$surface_4;}"
+        "QPushButton#ok{background:$danger_solid; color:$on_accent;}"
+        "QPushButton#ok:hover{background:$danger_solid_hover;}", c)
+
+
+def dialog_head_style(c) -> str:
+    return theme.qss("QLabel{font-size:16px; font-weight:650; color:$ink;"
+                     " background:transparent;}", c)
+
+
+def radio_style(c) -> str:
+    return theme.qss("QRadioButton{font-size:14px; color:$ink_2;"
+                     " spacing:8px; padding:4px 0;}", c)
+
+
+def input_field_style(c) -> str:
+    """普通 QLineEdit（记录页追问行、回答面板输入行）——qfluentwidgets 管不到它。"""
+    return theme.qss(
+        "QLineEdit{background:$input_bg; border:1px solid $line;"
+        " border-radius:10px; padding:6px 10px; color:$ink;"
+        " selection-background-color:$accent_soft_2;"
+        " selection-color:$ink;}", c)
+
+
+def themed_input(widget) -> None:
+    """给普通 QLineEdit 上主题色 + 占位符字色（Qt 样式表没有 placeholder 选择器，
+    只能走 QPalette；换主题时靠 hook 重刷）。"""
+    theme.style(widget, input_field_style)
+
+    def _palette() -> None:
+        pal = widget.palette()
+        pal.setColor(QPalette.ColorRole.PlaceholderText,
+                     QColor(theme.current().ink_5))
+        widget.setPalette(pal)
+
+    _palette()
+    theme.hook(widget, _palette)
+
+
+def move_dialog_style(c) -> str:
+    """「移入科目」= 通用对话框 + 单选行（指示器由 _CircleRadio 自绘）。"""
+    return dialog_style(c) + radio_style(c)
+
 
 # 涂抹贴近视口边缘时自动滚动会话树（2026-10-05 用户点名，P1）
 PAINT_SCROLL_BAND = 56    # 边缘带宽：笔尖距视口上/下缘多少 px 内持续滚
@@ -103,25 +348,27 @@ STATUS_LABEL = {
 }
 
 
-def _md(text: str) -> str:
+def _md(text: str, c=None) -> str:
+    c = c or theme.current()
     # LaTeX 公式在 markdown 转义**之前**抽出（否则公式里的 * _ 会被吃掉），
     # 渲成 PNG data URI 内联图（Qt 富文本不吃 MathML，见 latex_render 注释）；
     # 渲染失败原样显示源码。markdown≥3.6 移除的 math 扩展不用装、也不需要。
+    # 公式字色跟主题走（深色底上黑字看不见）——传当前 ink。
     # `<<` 先转义：模型协议标记（<<ok>> 等）会被富文本当标签吃掉，
     # 「ok」直接消失（2026-10-03 用户截图实锤）
-    holed, formulas = extract_math(str(text or ""))
+    holed, formulas = extract_math(str(text or ""), c.ink)
     out = markdown.markdown(holed.replace("<<", "&lt;&lt;"),
                             extensions=["fenced_code", "tables", "nl2br"])
     return style_tables(restore_math(placeholder_remote_images(out), formulas))
 
 
-def _md_inline(text: str) -> str:
+def _md_inline(text: str, c=None) -> str:
     """markdown 结果只剥掉**唯一**外层 <p>——检索小票要图标与文本同一行。
 
     `<p>` 是块级元素，`⌕ <p>检索 …</p>` 会渲成 `⌕` 独占一行、文本另起一行
     （2026-10-03 §8-1 用户贴的分行现场）；多段时不剥，宁可保持原样。
     """
-    out = _md(text)
+    out = _md(text, c)
     # _md 可能带 <style> 前缀（表格网格线，见 latex_render.style_tables）：
     # 判外层 <p> 前先把它挪开，否则带表的结果永远剥不掉 <p>、字号行高就散了。
     style = ""
@@ -183,6 +430,7 @@ class _CircleRadio(QRadioButton):
     16px+5px 边渲成了圆角方块，且两个行样式不一致——改为自绘）。"""
 
     def paintEvent(self, ev):
+        c = theme.current()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         d = 16.0
@@ -190,17 +438,17 @@ class _CircleRadio(QRadioButton):
         box = QRectF(x0, (self.height() - d) / 2, d, d)
         if self.isChecked():
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor("#ec4899"))
+            p.setBrush(QColor(c.accent))
             p.drawEllipse(box)
-            p.setPen(QPen(QColor("#ffffff"), 2.0, Qt.SolidLine,
+            p.setPen(QPen(QColor(c.on_accent), 2.0, Qt.SolidLine,
                           Qt.RoundCap, Qt.RoundJoin))
             p.drawLine(x0 + 4.4, box.y() + 8.4, x0 + 7.0, box.y() + 11.2)
             p.drawLine(x0 + 7.0, box.y() + 11.2, x0 + 11.6, box.y() + 5.8)
         else:
-            p.setPen(QPen(QColor("#c4c9db"), 1.5))
-            p.setBrush(QColor("#ffffff"))
+            p.setPen(QPen(QColor(c.line_strong), 1.5))
+            p.setBrush(QColor(c.surface))
             p.drawEllipse(box)
-        p.setPen(QColor("#2b2f4a"))
+        p.setPen(QColor(c.ink_2))
         p.setFont(self.font())
         p.drawText(QRectF(24, 0, max(0.0, self.width() - 24), self.height()),
                    int(Qt.AlignVCenter | Qt.AlignLeft), self.text())
@@ -215,23 +463,12 @@ class _InputDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
         self.setFixedWidth(340)
-        self.setStyleSheet(
-            "QDialog{background:#ffffff; border-radius:16px;}"
-            "QLineEdit{border:1px solid #e6e8f2; border-radius:10px;"
-            " padding:9px 11px; background:#fafbfe; font-size:14px;}"
-            "QLineEdit:focus{border:1px solid #ec4899; background:#ffffff;}"
-            "QPushButton{border:none; border-radius:11px; padding:9px 20px;"
-            " font-weight:600; font-size:14px;}"
-            "QPushButton#cancel{background:#f1f3fb; color:#4a4f6b;}"
-            "QPushButton#cancel:hover{background:#e8ebf7;}"
-            "QPushButton#ok{background:#ff3b5c; color:#ffffff;}"
-            "QPushButton#ok:hover{background:#ef1f45;}")
+        theme.style(self, dialog_style)
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 20, 18)
         root.setSpacing(14)
         head = QLabel(title)
-        head.setStyleSheet("QLabel{font-size:16px; font-weight:650;"
-                           " color:#1a1d2e; background:transparent;}")
+        theme.style(head, dialog_head_style)
         root.addWidget(head)
         self.edit = QLineEdit(value)
         root.addWidget(self.edit)
@@ -273,24 +510,14 @@ class _MoveDialog(QDialog):
         self.setWindowTitle("移入科目")
         self.setModal(True)
         self.setFixedWidth(340)
-        self.setStyleSheet(
-            "QDialog{background:#ffffff; border-radius:16px;}"
-            "QRadioButton{font-size:14px; color:#2b2f4a; spacing:8px;"
-            " padding:4px 0;}"     # 指示器由 _CircleRadio 自绘（圆圈+√）
-            "QPushButton{border:none; border-radius:11px; padding:9px 20px;"
-            " font-weight:600; font-size:14px;}"
-            "QPushButton#cancel{background:#f1f3fb; color:#4a4f6b;}"
-            "QPushButton#cancel:hover{background:#e8ebf7;}"
-            "QPushButton#ok{background:#ff3b5c; color:#ffffff;}"
-            "QPushButton#ok:hover{background:#ef1f45;}")
+        theme.style(self, move_dialog_style)
         self._targets: list[str] = []
         self._radios: list[QRadioButton] = []
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 20, 18)
         root.setSpacing(12)
         head = QLabel("移入科目")
-        head.setStyleSheet("QLabel{font-size:16px; font-weight:650;"
-                           " color:#1a1d2e; background:transparent;}")
+        theme.style(head, dialog_head_style)
         root.addWidget(head)
         opts = QVBoxLayout()
         opts.setSpacing(6)
@@ -387,10 +614,9 @@ class SessionCard(QFrame):
         # 标题定长：_ElidedLabel 最小宽 60 + 超宽省略号——长标题不再把行尾
         # 按钮挤出行外（2026-10-03 用户反馈「只显示了两个按钮」）；
         # 也不设 TextSelectableByMouse：label 吞按下事件会开不了会话（§8-4）
-        self.title_lbl = _ElidedLabel(self._title, "#2b2f4a")
+        self.title_lbl = _ElidedLabel(self._title, theme.current().ink_2)
         self.time_lbl = QLabel(_fmt_stamp(row.get("updateTime")))
-        self.time_lbl.setStyleSheet(
-            "QLabel{font-size:11.5px; color:#a3a8c2; background:transparent;}")
+        theme.style(self.time_lbl, time_style)
         col.addWidget(self.title_lbl)
         col.addWidget(self.time_lbl)
 
@@ -416,8 +642,7 @@ class SessionCard(QFrame):
         # 未读红点（MV3 review.html .d）：后台完成的会话标记，点开即消
         self.dot = QLabel()
         self.dot.setFixedSize(8, 8)
-        self.dot.setStyleSheet(
-            "QLabel{background:#ec4899; border-radius:4px;}")
+        theme.style(self.dot, unread_dot_style)
         self.dot.setVisible(False)
         h.addWidget(self.dot)
         h.addWidget(self.rename_btn)
@@ -462,56 +687,32 @@ class SessionCard(QFrame):
     def _apply_ck(self):
         if self._checked:
             self.ck.setText("✓")   # U+2713，字号小、居中
-            self.ck.setStyleSheet(
-                "QLabel{background:#ec4899; border:1.5px solid #ec4899;"
-                " border-radius:8px; color:#ffffff; font-size:10px;"
-                " font-weight:700;}")
         else:
             self.ck.setText("")
-            self.ck.setStyleSheet(
-                "QLabel{background:#ffffff; border:1.5px solid #c3c8dd;"
-                " border-radius:8px;}")
+        theme.style(self.ck, check_box_style, self._checked)
 
     def set_selected(self, on: bool):
         self._sel = on
         self._apply()
 
     def _apply(self):
-        if self._checked:
-            bg, hover = "#fff0f7", "#ffe4f1"   # 多选勾选（MV3 .rrow.on）
-        elif self._sel:
-            bg, hover = "#ffeef7", "#ffe4f1"   # 选中：右栏正看这条
-        elif self._fav:
-            bg, hover = "#fff9ea", "#f5f7fd"   # 收藏行底
-        else:
-            bg, hover = "transparent", "#f5f7fd"
-        self.setStyleSheet(
-            f"QFrame#sessionCard{{background:{bg}; border-radius:12px;}}"
-            f"QFrame#sessionCard:hover{{background:{hover};}}")
-        star_fg = ACCENT if self._fav else "#b3b8cd"
-        self.star.setStyleSheet(
-            f"QPushButton{{background:transparent; border:none;"
-            f" color:{star_fg}; font-size:16px; border-radius:6px;}}"
-            "QPushButton:hover{color:#db2777;}")
+        state = ("checked" if self._checked else
+                 "sel" if self._sel else
+                 "fav" if self._fav else "plain")
+        theme.style(self, session_card_style, state)
+        theme.style(self.star, star_row_style, self._fav)
         # 收藏/选中常显，其余 hover 才显（MV3 review.html:60-69）
         self.star.setVisible(self._fav or self._sel or self._hover)
         for btn in (self.rename_btn, self.move_btn, self.del_btn):
             btn.setVisible(self._hover or self._sel)
-        title_fg = "#c2185b" if self._sel else "#2b2f4a"
+        c = theme.current()
+        title_fg = c.accent_deep if self._sel else c.ink_2
         title_w = "600" if self._sel else "normal"
         self.title_lbl.set_color(title_fg)   # 自绘走 _color，样式表色管不到
-        self.title_lbl.setStyleSheet(
-            f"QLabel{{font-size:13.5px; color:{title_fg}; font-weight:{title_w};"
-            " background:transparent;}")
+        theme.style(self.title_lbl, elided_style, 13.5, title_fg, title_w)
         for btn in (self.rename_btn, self.move_btn):
-            btn.setStyleSheet(
-                "QPushButton{background:transparent; border:none; font-size:14px;"
-                " color:#a3a8c2; border-radius:6px;}"
-                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
-        self.del_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:15px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+            theme.style(btn, icon_btn_style)
+        theme.style(self.del_btn, icon_btn_style, True)
 
     # ---- 整行点开 / 右键 ----
     def mousePressEvent(self, ev):
@@ -544,11 +745,10 @@ class CatRow(QFrame):
         h.setContentsMargins(8 + depth * 14, 6, 6, 6)
         h.setSpacing(7)
         self.folder = QLabel()
-        self.folder.setFixedSize(15, 11)   # MV3 纯 CSS 纸夹 .fi 15×11 #f9b6d5
-        self.folder.setStyleSheet(
-            "background:#f9b6d5; border-radius:2px;")
+        self.folder.setFixedSize(15, 11)   # MV3 纯 CSS 纸夹 .fi 15×11
+        theme.style(self.folder, folder_style)
         # 定长省略同会话行：长科目名也不能把 ✎× 挤出行外（同批反馈）
-        self.name_lbl = _ElidedLabel(name, "#40455f")
+        self.name_lbl = _ElidedLabel(name, theme.current().ink_2)
         self.rename_btn = QPushButton("✎")
         self.rename_btn.setFixedSize(22, 22)
         self.rename_btn.setCursor(Qt.PointingHandCursor)
@@ -580,30 +780,21 @@ class CatRow(QFrame):
         super().leaveEvent(ev)
 
     def _apply(self):
+        c = theme.current()
         if self._sel:   # 展开中（沿用选中底色，MV3 .sub.open）
-            bg, fg = "#ffeef7", "#c2185b"
+            fg = c.accent_deep
         elif self._status != 1:
-            bg, fg = "transparent", "#a3a8c2"
+            fg = c.ink_5
         else:
-            bg, fg = "transparent", "#40455f"
-        self.setStyleSheet(
-            f"QFrame#catRow{{background:{bg}; border-radius:10px;}}"
-            "QFrame#catRow:hover{background:#f2f4fb;}")
+            fg = c.ink_2
+        theme.style(self, cat_row_style, self._sel)
         self.name_lbl.setTextFormat(Qt.TextFormat.PlainText)
         self.name_lbl.set_color(fg)         # 自绘走 _color，样式表色管不到
-        self.name_lbl.setStyleSheet(
-            f"QLabel{{color:{fg}; background:transparent; font-size:13.5px;"
-            f" font-weight:600;}}")
+        theme.style(self.name_lbl, elided_style, 13.5, fg, "600")
         for btn in (self.rename_btn, self.del_btn):
             btn.setVisible(self._hover)
-        self.rename_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:13px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
-        self.del_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:14px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        theme.style(self.rename_btn, icon_btn_style)
+        theme.style(self.del_btn, icon_btn_style, True)
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.LeftButton:
@@ -613,12 +804,13 @@ class CatRow(QFrame):
 
 
 # ---------------------------------------------------------------- 消息流 / 截图
-def _detail_html(art: dict) -> str:
+def _detail_html(art: dict, c=None) -> str:
     """content.messages → markdown HTML（不渲染 think；截图在右栏单独展示）。
 
     本地库列表行直接带 `messages[]`；兼容老数据里 content 是 dict 或 JSON 串的
-    形状（迁移前的行）。
+    形状（迁移前的行）。颜色取当前主题调色板（换主题由 RecordsPane 重渲）。
     """
+    c = c or theme.current()
     msgs = art.get("messages")
     if not isinstance(msgs, list):
         content = art.get("content") or {}
@@ -641,71 +833,79 @@ def _detail_html(art: dict) -> str:
                 # 截屏补充（kind=answer）不是追问，不加
                 if kind == "chat":
                     parts.append(
-                        '<div style="color:#9aa0bb; font-size:11.5px;'
+                        f'<div style="color:{c.ink_5}; font-size:11.5px;'
                         ' font-weight:600; margin-bottom:3px;">追问</div>')
                 parts.append(
-                    '<div style="background:#f2f4fb; border-radius:12px;'
-                    ' padding:10px 10px 10px 3px; color:#1a1d2e;'
-                    f' font-size:14.5px;">{_md(txt)}</div>')
+                    f'<div style="background:{c.surface_2};'
+                    ' border-radius:12px; padding:10px 10px 10px 3px;'
+                    f' color:{c.ink}; font-size:14.5px;">{_md(txt, c)}</div>')
             continue
         if kind == "answer":
             head = _no_head(m.get("no"))
             ans, why = m.get("ans") or "", m.get("why") or ""
-            blk = ['<div style="border-left:3px solid #ec4899;'
+            blk = [f'<div style="border-left:3px solid {c.accent};'
                    ' padding-left:12px;">']
-            blk.append('<div style="color:#9aa0bb; font-size:11.5px;'
+            blk.append(f'<div style="color:{c.ink_5}; font-size:11.5px;'
                        ' font-weight:600;">初答</div>')
-            blk.append(f'<div style="color:#1a1d2e; font-size:17px;'
-                       f' font-weight:650;">{_md(head + ans)}</div>')
+            blk.append(f'<div style="color:{c.ink}; font-size:17px;'
+                       f' font-weight:650;">{_md(head + ans, c)}</div>')
             if why:
-                blk.append(f'<div style="color:#4a4f6b; font-size:15px;'
-                           f'">{_md(why)}</div>')
+                blk.append(f'<div style="color:{c.ink_3}; font-size:15px;'
+                           f'">{_md(why, c)}</div>')
             tools = m.get("tools") or []
             if tools:
                 blk.append('<div style="margin-top:6px;">')
                 for t in tools:
                     blk.append(
-                        '<div style="background:#f6f7fc; border-radius:7px;'
-                        ' padding:3px 8px; color:#7b81a0; font-size:13px;'
-                        f' margin-bottom:4px;">⌕ {_md_inline(str(t))}</div>')
+                        f'<div style="background:{c.surface_3};'
+                        ' border-radius:7px; padding:3px 8px;'
+                        f' color:{c.ink_4}; font-size:13px;'
+                        f' margin-bottom:4px;">⌕ {_md_inline(str(t), c)}</div>')
                 blk.append("</div>")
             if (m.get("verifyRan") or m.get("verifySkipped")
                     or m.get("verifyPending")):
                 verdict = str(m.get("verifyVerdict") or "")
                 note = m.get("verifyNote") or ""
                 if m.get("verifySkipped"):
-                    kind_c, txt_c, chip = "#f1f2f8", "#7b81a0", "⏭ 已跳过 · 初答自评确定"
+                    kind_c, txt_c = c.surface_3, c.ink_4
+                    chip = "⏭ 已跳过 · 初答自评确定"
                 elif not m.get("verifyRan"):
-                    kind_c, txt_c, chip = "#f1f2f8", "#7b81a0", "⏳ 待核实"
+                    kind_c, txt_c = c.surface_3, c.ink_4
+                    chip = "⏳ 待核实"
                 elif verdict == "FIX":
-                    kind_c, txt_c, chip = "#ffeced", "#d02747", "❌ 初答有误"
+                    kind_c, txt_c = c.danger_bg, c.danger
+                    chip = "❌ 初答有误"
                 else:
-                    kind_c, txt_c, chip = "#e7f8ef", "#0f9d58", "✅ 与初答一致"
+                    kind_c, txt_c = c.success_bg, c.success
+                    chip = "✅ 与初答一致"
                 blk.append(
-                    '<div style="border:1px solid #e6e8f2; background:#fbfcff;'
-                    ' border-radius:10px; padding:9px 11px; margin-top:9px;">'
-                    '<div style="color:#9aa0bb; font-size:11.5px;'
+                    f'<div style="border:1px solid {c.line};'
+                    f' background:{c.surface_2}; border-radius:10px;'
+                    ' padding:9px 11px; margin-top:9px;">'
+                    f'<div style="color:{c.ink_5}; font-size:11.5px;'
                     ' font-weight:600;">核实　'
                     f'<span style="background:{kind_c}; color:{txt_c};'
                     ' border-radius:999px; padding:1px 8px;">'
-                    f"{chip}</span></div>"
-                    f'<div style="color:#3d4260; font-size:15px;">'
-                    f"{_md(note)}</div></div>")
+                    f'{chip}</span></div>'
+                    f'<div style="color:{c.ink_3}; font-size:15px;">'
+                    f"{_md(note, c)}</div></div>")
             blk.append("</div>")
             parts.append("".join(blk))
         else:  # chat
             txt = m.get("text") or ""
-            blk = ['<div style="border-left:3px solid #ec4899;'
+            blk = [f'<div style="border-left:3px solid {c.accent};'
                    ' padding-left:12px;">']
             for t in (m.get("tools") or []):
                 blk.append(
-                    '<div style="background:#f6f7fc; border-radius:7px;'
-                    ' padding:3px 8px; color:#7b81a0; font-size:13px;'
-                    f' margin-bottom:4px;">⌕ {_md_inline(str(t))}</div>')
-            blk.append(f'<div style="color:#14172a; font-size:15px;">'
-                       f"{_md(txt)}</div></div>")
+                    f'<div style="background:{c.surface_3};'
+                    ' border-radius:7px; padding:3px 8px;'
+                    f' color:{c.ink_4}; font-size:13px;'
+                    f' margin-bottom:4px;">⌕ {_md_inline(str(t), c)}</div>')
+            blk.append(f'<div style="color:{c.ink}; font-size:15px;">'
+                       f"{_md(txt, c)}</div></div>")
             parts.append("".join(blk))
-    return "".join(parts) or '<span style="color:#a3a8c2;">（空会话）</span>'
+    return ("".join(parts)
+            or f'<span style="color:{c.ink_5};">（空会话）</span>')
 
 
 def article_shot(article: dict) -> str:
@@ -754,12 +954,10 @@ class _ClickableLabel(QLabel):
 class _ElidedLabel(QLabel):
     """单行标题：超宽右侧省略号（右栏会话标题用）。"""
 
-    def __init__(self, text: str = "", color: str = "#1a1d2e", parent=None):
+    def __init__(self, text: str = "", color: str | None = None, parent=None):
         super().__init__(text, parent)
-        self._color = color
-        self.setStyleSheet(
-            f"QLabel{{font-size:15px; font-weight:600; color:{self._color};"
-            " background:transparent;}")
+        self._color = color or theme.current().ink
+        theme.style(self, elided_style, 15, self._color, "600")
 
     def set_color(self, color: str):
         """换自绘字色（paintEvent 不走样式表的 color，得手动同步）。"""
@@ -829,8 +1027,7 @@ class RecordsPane(QWidget):
         side = QFrame()
         side.setObjectName("sidebar")
         side.setFixedWidth(280)
-        side.setStyleSheet("#sidebar{background:#ffffff;"
-                           " border-right:1px solid #e6e8f2;}")
+        theme.style(side, sidebar_style)
         sv = QVBoxLayout(side)
         sv.setContentsMargins(14, 14, 12, 12)
         sv.setSpacing(10)
@@ -844,7 +1041,7 @@ class RecordsPane(QWidget):
 
         seg = QFrame()
         seg.setObjectName("segBox")
-        seg.setStyleSheet("#segBox{background:#f2f4fb; border-radius:10px;}")
+        theme.style(seg, seg_track_style)
         sh = QHBoxLayout(seg)
         sh.setContentsMargins(3, 3, 3, 3)
         sh.setSpacing(0)
@@ -863,24 +1060,14 @@ class RecordsPane(QWidget):
         cat_row.setSpacing(8)
         self.new_cat_btn = QPushButton("＋ 新建科目")
         self.new_cat_btn.setCursor(Qt.PointingHandCursor)
-        self.new_cat_btn.setStyleSheet(
-            "QPushButton{border:1px dashed #e6e8f2; border-radius:10px;"
-            " padding:8px; color:#4a4f6b; font-size:13.5px;"
-            " background:transparent;}"
-            "QPushButton:hover{background:#ffeef7; border-color:#ec4899;"
-            " color:#ec4899;}")
+        theme.style(self.new_cat_btn, dashed_btn_style)
         self.new_cat_btn.clicked.connect(self._new_category)
         cat_row.addWidget(self.new_cat_btn, 1)
         # 多选入口（2026-10-05 用户拍板：不要长按，点按钮进）
         self.sel_btn = QPushButton("批量选择")
         self.sel_btn.setCursor(Qt.PointingHandCursor)
         self.sel_btn.setToolTip("进入多选：勾选后可批量收藏/移入/删除")
-        self.sel_btn.setStyleSheet(
-            "QPushButton{border:1px dashed #d9dcec; border-radius:10px;"
-            " padding:8px; color:#4a4f6b; font-size:13.5px;"
-            " background:transparent;}"
-            "QPushButton:hover{background:#ffeef7; border-color:#ec4899;"
-            " color:#ec4899;}")
+        theme.style(self.sel_btn, dashed_btn_style)
         self.sel_btn.clicked.connect(self._toggle_selecting)
         cat_row.addWidget(self.sel_btn)
         sv.addLayout(cat_row)
@@ -903,54 +1090,40 @@ class RecordsPane(QWidget):
         # ---- 多选底栏（mobile #batchbar 同款；只在多选模式露出） ----
         self._batch_bar = QFrame()
         self._batch_bar.setObjectName("batchBar")
-        self._batch_bar.setStyleSheet(
-            "#batchBar{background:#ffffff; border-top:1px solid #e6e8f2;}")
+        theme.style(self._batch_bar, batch_bar_style)
         bv = QVBoxLayout(self._batch_bar)
         bv.setContentsMargins(4, 8, 4, 4)
         bv.setSpacing(6)
         btop = QHBoxLayout()
         btop.setSpacing(6)
         self._sel_label = QLabel("已选 0 项")
-        self._sel_label.setStyleSheet(
-            "QLabel{color:#c2185b; font-size:13px; font-weight:600;"
-            " background:transparent;}")
+        theme.style(self._sel_label, sel_count_style)
         self.batch_cancel = QPushButton("取消")
         bcancel = self.batch_cancel
         bcancel.setCursor(Qt.PointingHandCursor)
-        bcancel.setStyleSheet(
-            "QPushButton{background:transparent; border:none; color:#7c819c;"
-            " font-size:13px; border-radius:8px; padding:3px 8px;}"
-            "QPushButton:hover{background:#f2f4fb; color:#1a1d2e;}")
+        theme.style(bcancel, ghost_btn_style)
         bcancel.clicked.connect(lambda: self._set_selecting(False))
         btop.addWidget(self._sel_label, 1)
         # 全选：作用于当前可见（过滤后）的会话，再点一次 = 取消全选
         self.batch_sel_all = QPushButton("全选")
         self.batch_sel_all.setCursor(Qt.PointingHandCursor)
-        self.batch_sel_all.setStyleSheet(
-            "QPushButton{background:transparent; border:none; color:#c2185b;"
-            " font-size:13px; font-weight:600; border-radius:8px;"
-            " padding:3px 8px;}"
-            "QPushButton:hover{background:#fff0f7;}"
-            "QPushButton:disabled{color:#b6bcd3;}")
+        theme.style(self.batch_sel_all, link_btn_style)
         self.batch_sel_all.clicked.connect(self._toggle_select_all)
         btop.addWidget(self.batch_sel_all)
         btop.addWidget(bcancel)
         bv.addLayout(btop)
         bops = QHBoxLayout()
         bops.setSpacing(6)
-        _op = ("QPushButton{background:#f2f4fb; border:none; border-radius:9px;"
-               " padding:7px 0; font-size:13px; font-weight:600; color:#4a4f6b;}"
-               "QPushButton:hover{background:#e8ebf7;}"
-               "QPushButton:disabled{color:#b6bcd3;}")
         self.batch_fav = QPushButton("★ 收藏")
         self.batch_move = QPushButton("⇄ 移入")
         self.batch_del = QPushButton("× 删除")
-        for b in (self.batch_fav, self.batch_move, self.batch_del):
+        for b in (self.batch_fav, self.batch_move):
             b.setCursor(Qt.PointingHandCursor)
-            b.setStyleSheet(_op)
+            theme.style(b, batch_op_style)
             bops.addWidget(b, 1)
-        self.batch_del.setStyleSheet(
-            _op + "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        self.batch_del.setCursor(Qt.PointingHandCursor)
+        theme.style(self.batch_del, batch_del_style)
+        bops.addWidget(self.batch_del, 1)
         self.batch_fav.clicked.connect(self._batch_fav)
         self.batch_move.clicked.connect(self._batch_move)
         self.batch_del.clicked.connect(self._batch_delete)
@@ -961,15 +1134,13 @@ class RecordsPane(QWidget):
         # ---------- 右栏：选中会话的内容区 ----------
         self.main_box = QFrame()
         self.main_box.setObjectName("mainBox")
-        self.main_box.setStyleSheet("#mainBox{background:#f7f8fc;}")
+        theme.style(self.main_box, main_box_style)
         mv = QVBoxLayout(self.main_box)
         mv.setContentsMargins(20, 14, 20, 12)
         mv.setSpacing(10)
 
         self.hint_lbl = QLabel("还没有搜题记录。\n回软件按 Alt+S 截一道题。")
-        self.hint_lbl.setStyleSheet(
-            "QLabel{color:#a3a8c2; font-size:14px; background:transparent;"
-            " padding:40px 0;}")
+        theme.style(self.hint_lbl, hint_lbl_style)
         self.hint_lbl.setAlignment(Qt.AlignCenter)
         mv.addWidget(self.hint_lbl, 1)
 
@@ -996,16 +1167,14 @@ class RecordsPane(QWidget):
         self.shot_lbl.setAlignment(Qt.AlignCenter)
         self.shot_lbl.setCursor(Qt.PointingHandCursor)
         self.shot_lbl.setToolTip("点击用系统默认程序打开")
-        self.shot_lbl.setStyleSheet(
-            "border:1px solid #e6e8f2; border-radius:12px;"
-            " background:#f7f8fc;")
+        theme.style(self.shot_lbl, shot_style)
         self.shot_lbl.clicked.connect(self._open_shot)
         self.shot_lbl.hide()
         dv.addWidget(self.shot_lbl)
 
         self.body = QTextBrowser()
         self.body.setOpenExternalLinks(True)   # 正文外链走系统浏览器
-        self.body.setStyleSheet("QTextBrowser{background:#ffffff; border:none;}")
+        theme.style(self.body, body_style)
         dv.addWidget(self.body, 1)
 
         # 「核实一下」真按钮（2026-10-03 反馈：富文本画不出圆角，锚点直角丑）——
@@ -1013,11 +1182,7 @@ class RecordsPane(QWidget):
         self.verify_btn = QPushButton("🔍 核实一下")
         self.verify_btn.setCursor(Qt.PointingHandCursor)
         self.verify_btn.setVisible(False)
-        self.verify_btn.setStyleSheet(
-            "QPushButton{background:#f1f3fb; color:#4a4f6b; border:none;"
-            " border-radius:10px; padding:6px 14px; font-weight:600;"
-            " font-size:13.5px;}"
-            "QPushButton:hover{background:#e8ebf7;}")
+        theme.style(self.verify_btn, soft_btn_style)
         self.verify_btn.clicked.connect(self._emit_verify)
         dv.addWidget(self.verify_btn)
 
@@ -1028,6 +1193,7 @@ class RecordsPane(QWidget):
         self.followup_input = QLineEdit()
         self.followup_input.setPlaceholderText(
             "接着问…（Enter 发送 · 回答在作答浮窗继续）")
+        themed_input(self.followup_input)
         self.followup_send = PrimaryPushButton("↑")
         self.followup_send.setFixedSize(40, 40)
         self.followup_send.setToolTip("发送")
@@ -1038,10 +1204,7 @@ class RecordsPane(QWidget):
         self.cancel_btn.setFixedSize(40, 40)
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_btn.setToolTip("停止本回合")
-        self.cancel_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:16px;"
-            " color:#a3a8c2; border-radius:10px;}"
-            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+        theme.style(self.cancel_btn, cancel_btn_style)
         foot.addWidget(self.cancel_btn)
         dv.addLayout(foot)
         self.followup_send.clicked.connect(self._send_followup)
@@ -1055,6 +1218,8 @@ class RecordsPane(QWidget):
 
         # 初始选中「全部」（2026-10-03 反馈：两个都不选中看着诡异）
         self._set_seg(False)
+        # 换主题：静态控件由 theme.style 绑定自动刷；会话行与右栏富文本要重渲
+        theme.hook(self, self._on_theme)
         # 自动加载（2026-10-03 反馈）：以前只在首次切入标签页拉一次，
         # 点进去可能空白、狂点刷新也不显示——开机即拉，标签页每次切入再拉
         self.load_categories()
@@ -1062,6 +1227,13 @@ class RecordsPane(QWidget):
 
     def _emit_cancel(self):
         self.cancelRequested.emit()
+
+    def _on_theme(self):
+        """换肤：会话行/科目行按新调色板重建，右栏富文本与公式图跟着重出。"""
+        self._render_tree()
+        row = self._current_row()
+        if row is not None:
+            self._render_detail(row, keep_shot=True)
 
     def _emit_verify(self):
         if self.current_id:
@@ -1140,9 +1312,7 @@ class RecordsPane(QWidget):
     def _tree_hint(text: str) -> QLabel:
         lab = QLabel(text)
         lab.setWordWrap(True)
-        lab.setStyleSheet(
-            "QLabel{color:#a3a8c2; font-size:12.5px; background:transparent;"
-            " padding:14px 6px;}")
+        theme.style(lab, tree_hint_style)
         return lab
 
     def _filtered(self) -> list[dict]:
@@ -1282,10 +1452,12 @@ class RecordsPane(QWidget):
             else:
                 self._scale_shot()
                 self.shot_lbl.show()
-        # 消息流：markdown HTML（think 绝不渲染）
+        # 消息流：markdown HTML（think 绝不渲染；颜色跟当前主题）
+        c = theme.current()
+        self.title_lbl.set_color(c.ink)
         self.body.setHtml(
-            '<div style="font-size:15px; line-height:1.6; color:#1a1d2e;">'
-            f"{_detail_html(art)}</div>")
+            f'<div style="font-size:15px; line-height:1.6; color:{c.ink};">'
+            f"{_detail_html(art, c)}</div>")
         bar = self.body.verticalScrollBar()
         if self._scroll_bottom_once:   # 接续 turn-end 后的首次重渲：留在底部
             self._scroll_bottom_once = False
@@ -1310,11 +1482,7 @@ class RecordsPane(QWidget):
 
     def _sync_star(self):
         on = bool((self._current_row() or {}).get("fav"))
-        fg = ACCENT if on else "#b3b8cd"
-        self.star_btn.setStyleSheet(
-            f"QPushButton{{background:transparent; border:none; color:{fg};"
-            " font-size:18px; border-radius:6px;}"
-            "QPushButton:hover{background:#f1f3fb; color:#db2777;}")
+        theme.style(self.star_btn, star_btn_style, on)
         self.star_btn.setToolTip("取消收藏" if on else "收藏此会话")
 
     def _star_clicked(self):
@@ -1373,11 +1541,7 @@ class RecordsPane(QWidget):
         self._set_selecting(False)   # 换筛选先退多选（选中集要跟着视图走）
         self.fav = 1 if fav else 0
         for btn, on in ((self.seg_all, not fav), (self.seg_fav, fav)):
-            bg = "#ffffff" if on else "transparent"
-            fg = "#14162a" if on else "#4a5070"
-            btn.setStyleSheet(
-                f"QPushButton{{background:{bg}; color:{fg}; border:none;"
-                " border-radius:8px; font-size:13px; font-weight:600;}")
+            theme.style(btn, seg_btn_style, on)
         self._render_tree()
 
     def _do_search(self):

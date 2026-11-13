@@ -60,13 +60,23 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
+from . import theme
 from .answer.engine import AgentEngine
 from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
 from .capture import CAPTURE_DIR, encode_jpeg
 from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
 from .log import get_logger
-from .records import UNREAD, _InputDialog, article_shot, purge_article_files
+from .records import (
+    UNREAD,
+    _InputDialog,
+    article_shot,
+    icon_btn_style,
+    purge_article_files,
+    soft_btn_style,
+    themed_input,
+    unread_dot_style,
+)
 from .settings_store import read as read_ui_settings
 from .settings_store import write as write_ui_settings
 from .store import Store, StoreError
@@ -83,12 +93,6 @@ STATUS_TEXT = {
     "aborted": "已停止",
 }
 
-_STATUS_OK = ("QLabel{background:#f4ecff; color:#7c4dbe; border-radius:999px;"
-              " padding:2px 10px; font-size:12.5px;}")
-_STATUS_ERR = ("QLabel{background:#ffeef1; color:#c81e45; border-radius:999px;"
-               " padding:2px 10px; font-size:12.5px;}")
-_CHIP = {"skip": ("#f1f2f8", "#7b81a0"), "fix": ("#ffeced", "#d02747"),
-         "ok": ("#e7f8ef", "#0f9d58")}
 # chip 文案照抄 MV3 drawer.js:686-693
 _CHIP_TEXT = {"skip": "⏭ 已跳过 · 初答自评确定", "fix": "❌ 初答有误",
               "ok": "✅ 与初答一致", "pending": "⏳ 待核实"}
@@ -97,26 +101,160 @@ _PLACEHOLDER = "接着问…（Enter 发送）"
 _HIST_PLACEHOLDER = "历史会话（只读）· 按 Alt+S 开始新题"
 
 
+# ---------------------------------------------------------------- 样式
+# 色号一律走 theme 调色板；控件用 theme.style() 绑定，换主题自动重刷。
+# 消息块里的富文本（_md_div）样式表管不到 → _on_theme() 重渲。
+
+def status_ok_style(c) -> str:
+    """状态药丸（紫，MV3 drawer 同款语义）。"""
+    return theme.qss("QLabel{background:$info_bg; color:$info_fg;"
+                     " border-radius:999px; padding:2px 10px;"
+                     " font-size:12.5px;}", c)
+
+
+def status_err_style(c) -> str:
+    return theme.qss("QLabel{background:$danger_bg; color:$danger_strong;"
+                     " border-radius:999px; padding:2px 10px;"
+                     " font-size:12.5px;}", c)
+
+
+def chip_style(c, kind: str) -> str:
+    """核实结论 chip：skip/pending 中性、fix 红、ok 绿。"""
+    if kind == "fix":
+        bg, fg = c.danger_bg, c.danger
+    elif kind == "ok":
+        bg, fg = c.success_bg, c.success
+    else:
+        bg, fg = c.surface_3, c.ink_4
+    return theme.qss("QLabel{background:$bg; color:$fg; border-radius:999px;"
+                     " padding:1px 8px; font-size:11.5px;}", c,
+                     bg=bg, fg=fg)
+
+
+def star_style(c, fav: bool, size: int = 14) -> str:
+    """★ 必须自给 color（字形本身无上色）：收藏用主色 / 未收藏灰。"""
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; color:$fg;"
+        " font-size:${size}px; border-radius:6px;}"
+        "QPushButton:hover{background:$accent_soft; color:$accent_strong;}", c,
+        fg=c.accent if fav else c.ink_6, size=str(size))
+
+
+def mini_btn_style(c, accent: bool = True) -> str:
+    """顶栏小按钮。accent hover（同 MV3 💬/★）；危险类传 False。"""
+    hover_bg, hover_fg = ((c.accent_soft, c.accent) if accent
+                          else (c.danger_bg, c.danger))
+    return theme.qss(
+        "QPushButton{background:transparent; border:none; font-size:15px;"
+        " color:$ink_5; border-radius:6px;}"
+        "QPushButton:hover{background:$hover_bg; color:$hover_fg;"
+        " border-radius:6px;}", c, hover_bg=hover_bg, hover_fg=hover_fg)
+
+
+def sec_label_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_5; font-size:11.5px;"
+                     " font-weight:600;}", c)
+
+
+def window_style(c) -> str:
+    return theme.qss("AnswerWindow{background:$surface;"
+                     " border:1.5px solid $overlay_border;"
+                     " border-radius:8px;}", c)
+
+
+def content_style(c) -> str:
+    return theme.qss("#contentBox{background:$surface;}", c)
+
+
+def scroll_style(c) -> str:
+    return theme.qss("QScrollArea{background:$surface; border:none;}", c)
+
+
+def row_style(c) -> str:
+    return theme.qss("#sessRow{border-radius:10px;}"
+                     "#sessRow:hover{background:$surface_2;}", c)
+
+
+def row_title_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_2; font-size:14px;"
+                     " background:transparent;}", c)
+
+
+def row_time_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_5; font-size:11.5px;"
+                     " background:transparent;}", c)
+
+
+def shot_label_style(c) -> str:
+    return theme.qss("#shotLabel{border:1px solid $line;"
+                     " border-radius:12px; background:$bg;}", c)
+
+
+def bubble_style(c) -> str:
+    return theme.qss("#userBubble{background:$surface_2;"
+                     " border-radius:12px;}", c)
+
+
+def msg_block_style(c) -> str:
+    return theme.qss("#msgBlock{border-left:3px solid $accent;"
+                     " padding:2px 0 2px 12px;}", c)
+
+
+def user_text_style(c) -> str:
+    return theme.qss("QLabel{color:$ink; font-size:14.5px;"
+                     " background:transparent;}", c)
+
+
+def err_style(c) -> str:
+    return theme.qss("QLabel{color:$danger_strong; font-size:14px;"
+                     " background:$danger_bg; border-radius:8px;"
+                     " padding:6px 8px;}", c)
+
+
+def verify_box_style(c) -> str:
+    return theme.qss("#verifyBox{background:$surface_2;"
+                     " border:1px solid $line; border-radius:10px;}", c)
+
+
+def tool_chip_style(c) -> str:
+    return theme.qss("#toolChip{background:$surface_3;"
+                     " border-radius:7px;}", c)
+
+
+def tool_icon_style(c) -> str:
+    return theme.qss("QLabel{color:$accent; background:transparent;"
+                     " font-size:13px;}", c)
+
+
+def tool_text_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_4; background:transparent;"
+                     " font-size:13px;}", c)
+
+
+def pop_style(c) -> str:
+    return theme.qss("#sessionPop{background:$surface;"
+                     " border:1px solid $line; border-radius:16px;}", c)
+
+
+def pop_tip_style(c) -> str:
+    return theme.qss("QLabel{color:$ink_5; font-size:13.5px;"
+                     " background:transparent;}", c)
+
+
 def _fmt_stamp(value) -> str:
     """MV3 review.js:37-42 fmtStamp → `MM-DD HH:mm`。"""
     s = str(value or "")
     return s[5:16] if len(s) >= 16 else s[:16]
 
 
-def _star_style(fav: bool, size: int = 14) -> str:
-    """★ 必须自给 color（字形本身无上色）：收藏粉 / 未收藏灰，hover #db2777。"""
-    base = "#ec4899" if fav else "#b3b8cd"
-    return (f"QPushButton{{background:transparent; border:none; color:{base};"
-            f" font-size:{size}px; border-radius:6px;}}"
-            "QPushButton:hover{background:#ffeef7; color:#db2777;}")
-
-
-def _md_html(text: str) -> str:
+def _md_html(text: str, c=None) -> str:
     # LaTeX 公式在 markdown 转义**之前**抽出（否则公式里的 * _ 会被吃掉），
     # 渲成 PNG data URI 内联图（Qt 富文本不吃 MathML，见 latex_render 注释）；
     # 渲染失败原样显示源码。markdown≥3.6 移除的 math 扩展不用装、也不需要。
+    # 公式字色跟主题走（深色底上黑字看不见）。
     # `<<` 先转义：协议标记（<<ok>>）会被富文本当标签吃掉，「ok」消失（2026-10-03）
-    holed, formulas = extract_math(str(text or ""))
+    c = c or theme.current()
+    holed, formulas = extract_math(str(text or ""), c.ink)
     out = markdown.markdown(
         holed.replace("<<", "&lt;&lt;"),
         extensions=["fenced_code", "tables", "nl2br"])
@@ -167,24 +305,19 @@ def _round_window_corners(w) -> None:
 
 
 def _mini_btn(text: str, tip: str, accent: bool = True) -> QPushButton:
-    """顶栏小按钮。默认 accent hover（#ffeef7/#ec4899，同 MV3 💬/★）；
+    """顶栏小按钮。默认 accent hover（同 MV3 💬/★）；
     关闭 × 与中止 🚫 传 accent=False 保留危险红 hover。"""
-    hover_bg, hover_fg = ("#ffeef7", "#ec4899") if accent else ("#fdecef", "#d02747")
     b = QPushButton(text)
     b.setToolTip(tip)
     b.setFixedSize(30, 30)
     b.setCursor(Qt.PointingHandCursor)
-    b.setStyleSheet(
-        "QPushButton{background:transparent; border:none; font-size:15px;"
-        " color:#a3a8c2; border-radius:6px;}"
-        f"QPushButton:hover{{background:{hover_bg}; color:{hover_fg};"
-        " border-radius:6px;}}")
+    theme.style(b, mini_btn_style, accent)
     return b
 
 
 def _sec_label(text: str) -> QLabel:
     lab = QLabel(text)
-    lab.setStyleSheet("QLabel{color:#9aa0bb; font-size:11.5px; font-weight:600;}")
+    theme.style(lab, sec_label_style)
     return lab
 
 
@@ -286,19 +419,16 @@ class _SessionRow(QFrame):
         super().__init__(parent)
         self._art = art
         self.setObjectName("sessRow")
-        self.setStyleSheet("#sessRow{border-radius:10px;}"
-                           "#sessRow:hover{background:#f5f7fd;}")
+        theme.style(self, row_style)
         h = QHBoxLayout(self)
         h.setContentsMargins(8, 6, 6, 6)
         h.setSpacing(8)
         title = str(art.get("title") or "新会话")
         t = QLabel(QFontMetrics(QApplication.font()).elidedText(
             title, Qt.TextElideMode.ElideRight, avail))
-        t.setStyleSheet("QLabel{color:#2b2f4a; font-size:14px;"
-                        " background:transparent;}")
+        theme.style(t, row_title_style)
         ts = QLabel(_fmt_stamp(art.get("updateTime")))
-        ts.setStyleSheet("QLabel{color:#a3a8c2; font-size:11.5px;"
-                         " background:transparent;}")
+        theme.style(ts, row_time_style)
         col = QVBoxLayout()
         col.setSpacing(2)
         col.setContentsMargins(0, 0, 0, 0)
@@ -307,7 +437,7 @@ class _SessionRow(QFrame):
         self.star = QPushButton("★")
         self.star.setFixedSize(24, 24)
         self.star.setCursor(Qt.PointingHandCursor)
-        self.star.setStyleSheet(_star_style(bool(art.get("fav"))))
+        theme.style(self.star, star_style, bool(art.get("fav")))
         self.star.clicked.connect(
             lambda: self.favToggled.emit(self._art, self))
         self.rename_btn = QPushButton("✎")   # U+270E
@@ -323,22 +453,15 @@ class _SessionRow(QFrame):
         self.del_btn.clicked.connect(
             lambda: self.deleteRequested.emit(self._art))
         for b in (self.rename_btn, self.del_btn):
-            b.setStyleSheet(
-                "QPushButton{background:transparent; border:none; font-size:14px;"
-                " color:#a3a8c2; border-radius:6px;}"
-                "QPushButton:hover{background:#eef1fa; color:#4a4f6b;}")
-        self.del_btn.setStyleSheet(
-            "QPushButton{background:transparent; border:none; font-size:15px;"
-            " color:#a3a8c2; border-radius:6px;}"
-            "QPushButton:hover{background:#fdecef; color:#d02747;}")
+            theme.style(b, icon_btn_style)
+        theme.style(self.del_btn, icon_btn_style, True)
         h.addWidget(self.star)
         h.addLayout(col, 1)
         # 未读红点（MV3 review.html .d 同款 8px 粉点）：后台完成的会话标记。
         # Qt 样式表不认 box-shadow（写了只刷警告），圆点靠底色就够醒目
         self.dot = QLabel()
         self.dot.setFixedSize(8, 8)
-        self.dot.setStyleSheet(
-            "QLabel{background:#ec4899; border-radius:4px;}")
+        theme.style(self.dot, unread_dot_style)
         self.dot.setVisible(False)
         h.addWidget(self.dot)
         h.addWidget(self.rename_btn)
@@ -347,7 +470,7 @@ class _SessionRow(QFrame):
         self._apply()
 
     def set_fav(self, on: bool):
-        self.star.setStyleSheet(_star_style(on))
+        theme.style(self.star, star_style, on)
 
     def set_unread(self, on: bool):
         self.dot.setVisible(bool(on))
@@ -401,20 +524,18 @@ class AnswerWindow(QWidget):
         # ---- 标题条（可拖拽；无 pin —— MV3 抽屉无置顶控件） ----
         # 圆角 + 描边（2026-10-03 反馈：与背景要能区分）——QSS 画边，
         # 真圆角靠 Win11 DWM（showEvent 里打 DWMWA_WINDOW_CORNER_PREFERENCE）
-        self.setStyleSheet(
-            "AnswerWindow{background:#ffffff; border:1.5px solid #b0b5cb;"
-            " border-radius:8px;}")
+        theme.style(self, window_style)
         bar = QHBoxLayout()
         bar.setContentsMargins(16, 10, 8, 8)
         bar.setSpacing(8)
         self.title = StrongBodyLabel("Spore")
         self.status = QLabel("")
-        self.status.setStyleSheet(_STATUS_OK)
+        theme.style(self.status, status_ok_style)
         self.status.setVisible(False)
         # MV3 drawer.js:255-263 顶栏顺序：💬 会话 · ★ 收藏 · 标题 · 状态 · ×
         self.sessions_btn = _mini_btn("💬", "会话列表")
         self.fav_btn = _mini_btn("★", "收藏")
-        self.fav_btn.setStyleSheet(_star_style(False))
+        theme.style(self.fav_btn, star_style, False)
         self.close_btn = _mini_btn("×", "关闭（Alt+Z 可再呼出）", accent=False)
         bar.addWidget(self.sessions_btn)
         bar.addWidget(self.fav_btn)
@@ -426,7 +547,7 @@ class AnswerWindow(QWidget):
         # ---- 内容滚动区：截图 + 消息块 ----
         self._content = QWidget()
         self._content.setObjectName("contentBox")
-        self._content.setStyleSheet("#contentBox{background:#ffffff;}")
+        theme.style(self._content, content_style)
         self._blocks_box = QVBoxLayout(self._content)
         self._blocks_box.setContentsMargins(16, 4, 16, 12)
         self._blocks_box.setSpacing(10)
@@ -438,7 +559,7 @@ class AnswerWindow(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setWidget(self._content)
-        self._scroll.setStyleSheet("QScrollArea{background:#ffffff; border:none;}")
+        theme.style(self._scroll, scroll_style)
         root.addWidget(self._scroll, 1)
 
         # ---- 追问行 ----
@@ -447,6 +568,7 @@ class AnswerWindow(QWidget):
         foot.setSpacing(8)
         self.input = QLineEdit()
         self.input.setPlaceholderText("接着问…（Enter 发送）")
+        themed_input(self.input)
         self.send_btn = PrimaryPushButton("↑")
         self.send_btn.setFixedSize(40, 40)
         self.send_btn.setToolTip("发送")
@@ -477,6 +599,8 @@ class AnswerWindow(QWidget):
         self.cancel_btn.clicked.connect(self._cancel)
         self._build_sessions_popup()
         self.input.installEventFilter(self)   # 输入框会吞文字拖放 → URL 拖放接过来
+        # 换肤：消息块里的 markdown 富文本样式表管不到，重渲一遍
+        theme.hook(self, self._on_theme)
 
     # ---------- 渐显/渐隐（整窗 α，2026-10-03 反馈） ----------
     def showEvent(self, ev):
@@ -710,8 +834,7 @@ class AnswerWindow(QWidget):
         lab.setAlignment(Qt.AlignCenter)
         lab.setMaximumHeight(200)
         lab.setVisible(False)
-        lab.setStyleSheet("#shotLabel{border:1px solid #e6e8f2;"
-                          " border-radius:12px; background:#f7f8fc;}")
+        theme.style(lab, shot_label_style)
         lab.setTextInteractionFlags(Qt.TextSelectableByMouse)  # 截图不可点开
         return lab
 
@@ -750,13 +873,10 @@ class AnswerWindow(QWidget):
         frame = QFrame()
         if kind == "user":
             frame.setObjectName("userBubble")
-            frame.setStyleSheet(
-                "#userBubble{background:#f2f4fb; border-radius:12px;}")
+            theme.style(frame, bubble_style)
         else:
             frame.setObjectName("msgBlock")
-            frame.setStyleSheet(
-                "#msgBlock{border-left:3px solid #ec4899;"
-                " padding:2px 0 2px 12px;}")
+            theme.style(frame, msg_block_style)
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -787,11 +907,7 @@ class AnswerWindow(QWidget):
             b["verify_btn"] = QPushButton("🔍 核实一下")
             b["verify_btn"].setCursor(Qt.PointingHandCursor)
             b["verify_btn"].setVisible(False)
-            b["verify_btn"].setStyleSheet(
-                "QPushButton{background:#f1f3fb; color:#4a4f6b; border:none;"
-                " border-radius:10px; padding:6px 14px; font-weight:600;"
-                " font-size:13.5px;}"
-                "QPushButton:hover{background:#e8ebf7;}")
+            theme.style(b["verify_btn"], soft_btn_style)
             b["verify_btn"].clicked.connect(
                 lambda _=False, blk=b: self._do_verify(blk))
             lay.addWidget(b["verify_btn"])
@@ -809,15 +925,12 @@ class AnswerWindow(QWidget):
             b["user_lbl"].setTextFormat(Qt.TextFormat.PlainText)
             b["user_lbl"].setTextInteractionFlags(
                 Qt.TextInteractionFlag.TextSelectableByMouse)
-            b["user_lbl"].setStyleSheet(
-                "QLabel{color:#1a1d2e; font-size:14.5px; background:transparent;}")
+            theme.style(b["user_lbl"], user_text_style)
             lay.addWidget(b["user_lbl"])
 
         b["err_lbl"] = QLabel("")
         b["err_lbl"].setWordWrap(True)
-        b["err_lbl"].setStyleSheet(
-            "QLabel{color:#c81e45; font-size:14px; background:#ffeef1;"
-            " border-radius:8px; padding:6px 8px;}")
+        theme.style(b["err_lbl"], err_style)
         b["err_lbl"].setVisible(False)
         lay.addWidget(b["err_lbl"])
 
@@ -838,9 +951,7 @@ class AnswerWindow(QWidget):
         """核实框（MV3 drawer.js:797-981）：头(核实+chip) + 正文 note。"""
         box = QFrame()
         box.setObjectName("verifyBox")
-        box.setStyleSheet(
-            "#verifyBox{background:#fbfcff; border:1px solid #e6e8f2;"
-            " border-radius:10px;}")
+        theme.style(box, verify_box_style)
         v = QVBoxLayout(box)
         v.setContentsMargins(11, 9, 11, 9)
         v.setSpacing(6)
@@ -866,18 +977,15 @@ class AnswerWindow(QWidget):
         blk["tools"].append(text)
         chip = QFrame()
         chip.setObjectName("toolChip")
-        chip.setStyleSheet(
-            "#toolChip{background:#f6f7fc; border-radius:7px;}")
+        theme.style(chip, tool_chip_style)
         h = QHBoxLayout(chip)
         h.setContentsMargins(8, 3, 8, 3)
         h.setSpacing(5)
         icon = QLabel("⌕")
-        icon.setStyleSheet("QLabel{color:#ec4899; background:transparent;"
-                           " font-size:13px;}")
+        theme.style(icon, tool_icon_style)
         body = QLabel(text)
         body.setWordWrap(True)
-        body.setStyleSheet("QLabel{color:#7b81a0; background:transparent;"
-                           " font-size:13px;}")
+        theme.style(body, tool_text_style)
         h.addWidget(icon)
         h.addWidget(body, 1)
         blk["tools_box"].addWidget(chip)
@@ -922,19 +1030,18 @@ class AnswerWindow(QWidget):
             blk["verify_frame"].setVisible(False)
             return
         kind = verify.get("kind", "pending")
+        if kind == "skipped":        # 历史路径存的是过去式；_CHIP_TEXT 只认 skip
+            kind = "skip"
         if kind not in _CHIP_TEXT:
             kind = "pending"
-        bg, fg = _CHIP.get(kind, _CHIP["skip"])
         chip = blk["chip"]
         chip.setText(_CHIP_TEXT[kind])
-        chip.setStyleSheet(
-            f"QLabel{{background:{bg}; color:{fg}; border-radius:999px;"
-            f" padding:1px 8px; font-size:11.5px;}}")
+        theme.style(chip, chip_style, kind)
         chip.setVisible(True)
         note = blk["note"]
         text = str(verify.get("note") or "")
         if text:
-            note.setText(_md_div(text, "#3d4260", 15))
+            note.setText(_md_div(text, theme.current().ink_3, 15))
             note.setVisible(True)
         else:
             note.setVisible(False)
@@ -946,9 +1053,9 @@ class AnswerWindow(QWidget):
         self.status.setText(label)
         self.status.setVisible(bool(label))
         if status in ("error", "aborted"):
-            self.status.setStyleSheet(_STATUS_ERR)
+            theme.style(self.status, status_err_style)
         else:
-            self.status.setStyleSheet(_STATUS_OK)
+            theme.style(self.status, status_ok_style)
 
     def _start_timer(self):
         if not self._md_timer.isActive():
@@ -968,26 +1075,35 @@ class AnswerWindow(QWidget):
             bar.setValue(bar.maximum())
 
     def _paint(self, blk: dict):
+        c = theme.current()
         if blk["kind"] == "answer":
             head = _no_head(blk.get("no"))
             body = str(blk.get("ans") or "")
             if not body and blk.get("placeholder"):
-                html = '<div style="color:#9aa0bb;"><i>读题中…</i></div>'
+                html = (f'<div style="color:{c.ink_5};">'
+                        "<i>读题中…</i></div>")
             else:
-                html = _md_div(head + body, "#1a1d2e", 17)
+                html = _md_div(head + body, c.ink, 17)
             blk["ans_lbl"].setText(html)
             why = str(blk.get("why") or "")
             if why:
-                blk["why_lbl"].setText(_md_div(why, "#4a4f6b", 15))
+                blk["why_lbl"].setText(_md_div(why, c.ink_3, 15))
                 blk["why_lbl"].setVisible(True)
             else:
                 blk["why_lbl"].setVisible(False)
         elif blk["kind"] == "chat":
             blk["text_lbl"].setText(
-                _md_div(str(blk.get("text") or ""), "#14172a", 15)
+                _md_div(str(blk.get("text") or ""), c.ink, 15)
                 if blk.get("text") else "")
         elif blk["user_lbl"] is not None:  # 用户气泡：纯文本
             blk["user_lbl"].setText(str(blk.get("text") or ""))
+
+    def _on_theme(self):
+        """换肤：消息块富文本按新 ink 重出（控件样式由 theme.style 绑定刷）。"""
+        for blk in self._blocks:
+            self._paint(blk)
+            if blk.get("verify"):
+                self._paint_verify(blk)
 
     def _paint_err(self, blk: dict):
         if blk.get("err"):
@@ -1011,7 +1127,7 @@ class AnswerWindow(QWidget):
         self.title.setText("Spore")
         self.status.setText("")
         self.status.setVisible(False)
-        self.status.setStyleSheet(_STATUS_OK)
+        theme.style(self.status, status_ok_style)
         self.input.clear()
         self._set_readonly(False)
         self._current_article_id = None   # 新题未落库前 ★ 没有对象
@@ -1034,7 +1150,7 @@ class AnswerWindow(QWidget):
         self._sync_fav_btn()
 
     def _sync_fav_btn(self):
-        self.fav_btn.setStyleSheet(_star_style(self._current_fav))
+        theme.style(self.fav_btn, star_style, self._current_fav)
         self.fav_btn.setToolTip("取消收藏" if self._current_fav else "收藏")
 
     def _toast(self, ok: bool, title: str, content: str, ms: int = 2200):
@@ -1080,9 +1196,7 @@ class AnswerWindow(QWidget):
     def _build_sessions_popup(self):
         self._pop = QFrame(self)
         self._pop.setObjectName("sessionPop")
-        self._pop.setStyleSheet(
-            "#sessionPop{background:#ffffff; border:1px solid #e6e8f2;"
-            " border-radius:16px;}")
+        theme.style(self._pop, pop_style)
         self._pop.setVisible(False)
         lay = QVBoxLayout(self._pop)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -1142,8 +1256,7 @@ class AnswerWindow(QWidget):
         self._clear_pop_box()
         if err or not rows:
             tip = QLabel(err or "还没有会话\n按 Alt+S 框选截图提问")
-            tip.setStyleSheet("QLabel{color:#a3a8c2; font-size:13.5px;"
-                              " background:transparent;}")
+            theme.style(tip, pop_tip_style)
             tip.setWordWrap(True)
             tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._pop_box.insertWidget(0, tip)

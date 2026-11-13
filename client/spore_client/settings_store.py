@@ -29,6 +29,7 @@ _FIELDS = (
     "endpoint", "model", "maxToolRounds", "historyLimit", "proxy",
     "fastNoThink", "autoVerify", "apiKey",
     "panelFixed", "panelPos",   # 回答面板位置固定开关 + 记住的坐标（2026-10-05）
+    "theme",                    # 外观档位 system|light|dark（2026-11-13，同移动端）
 )
 
 

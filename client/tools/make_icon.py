@@ -1,9 +1,9 @@
 """生成 client/assets/app.ico（exe 内嵌图标 + 备用图标源）。
 
-源图 = MV3 图标四档 PNG（spore_client/assets/icon-{16,32,48,128}.png）。
+源图 = 孢子球图标各档 PNG（spore_client/assets/icon-{16,32,48,128,256}.png，
+与 Spore-Mobile 同一套几何/配色，深空底 + 青绿外晕 + 粉球双眼）。
 每档按"最近的够大源图"LANCZOS 缩放后单独入 ICO——Pillow 的 ICO 写入会原样
 采用 append_images 中尺寸对上的那张，所以每一档都是我们自己渲的，不是它重采样。
-256 档由 128 放大（源没有更大档；发版若要更锐需另出 256 源图）。
 
 用法：python tools/make_icon.py
 """
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "spore_client" / "assets"
 OUT = ROOT / "assets" / "app.ico"
 SIZES = (16, 24, 32, 48, 64, 128, 256)
-SOURCE_SIZES = (16, 32, 48, 128)
+SOURCE_SIZES = (16, 32, 48, 128, 256)
 
 
 def render(size: int, sources: dict[int, Image.Image]) -> Image.Image:

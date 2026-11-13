@@ -15,8 +15,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 from qfluentwidgets import PushButton
 
+from . import theme
 from .log import LOG_DIR, get_logger
-from .settings import BTN2_STYLE, build_card, hint_label
+from .settings import btn2_style, build_card, hint_label
 
 LOG = get_logger()
 
@@ -24,6 +25,12 @@ LOG_FILE: Path = LOG_DIR / "client.log"
 _TAIL_BYTES = 262_144          # 256KB 足够截出末 300 行
 _TAIL_LINES = 300
 _EMPTY = "（还没有日志）"
+def note_style(c: theme.Palette) -> str:
+    """状态行小字（日志页底部操作回显）。"""
+    return theme.qss("font-size: 12.5px; color: $ink_4;", c)
+
+
+# 日志框是两个主题都深色的终端块（内容性质决定，不跟主题走）
 _LOGBOX_STYLE = (
     "QPlainTextEdit { background: #12162a; color: #bfe9d0;"
     " border: 1px solid #12162a; border-radius: 10px; padding: 10px 12px;"
@@ -66,7 +73,7 @@ class LogPane(QWidget):
         self.btn_clear = PushButton("清空")
         self.btn_clear.setObjectName("btnLogClear")
         for b in (self.btn_refresh, self.btn_copy, self.btn_clear):
-            b.setStyleSheet(BTN2_STYLE)
+            theme.style(b, btn2_style)
         btn_box.addWidget(self.btn_refresh)
         btn_box.addWidget(self.btn_copy)
         btn_box.addWidget(self.btn_clear)
@@ -89,7 +96,7 @@ class LogPane(QWidget):
         root.addWidget(card)
         self.ops_note = QLabel("")
         self.ops_note.setObjectName("logOpsNote")
-        self.ops_note.setStyleSheet("font-size: 12.5px; color: #7c819c;")
+        theme.style(self.ops_note, note_style)
         root.addWidget(self.ops_note)
         root.addStretch(1)
 

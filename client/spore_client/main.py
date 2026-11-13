@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from . import __version__
+from . import __version__, theme
 from .app_icon import app_icon
 from .instance_lock import acquire_instance_lock
 from .log import get_logger
@@ -72,11 +72,10 @@ def main() -> int:
              __version__, getattr(sys, "frozen", False))
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
-    app.setWindowIcon(app_icon())  # = MV3 扩展图标（用户 2026-10-02 拍板）
-    # MV3 品牌粉 + 浅色（design-brief §0）
-    from qfluentwidgets import Theme, setTheme, setThemeColor
-    setThemeColor("#ec4899")
-    setTheme(Theme.LIGHT)
+    app.setWindowIcon(app_icon())  # 孢子球（与 Spore-Mobile 同一个图标）
+    # 外观：档位读 ui_settings.theme（system|light|dark），系统变化时自动跟随
+    theme.apply()
+    theme.follow_system()
     _install_excepthooks()
 
     # ---- 单例：内核互斥体才是判据；管子降级成唤醒通道 ----

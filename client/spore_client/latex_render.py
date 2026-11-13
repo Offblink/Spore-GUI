@@ -50,7 +50,7 @@ _INLINE_PAREN = re.compile(r"\\\((.+?)\\\)")
 _PH = "\x00math{}\x00"
 _PH_RE = re.compile("\x00math(\\d+)\x00")
 
-_render_cache: dict[str, str] = {}
+_render_cache: dict[tuple[str, str], str] = {}
 _state: tuple | None = None     # 懒加载 matplotlib：没公式的启动不付它的时间
 
 # 中文只可能出现在 upright text（\text{} / rm 族）：默认 mathtext 字体（DejaVu/STIX）
@@ -97,11 +97,12 @@ def _init():
     return _state
 
 
-def _render(src: str) -> tuple[bytes, int, int]:
+def _render(src: str, color: str = "#000000") -> tuple[bytes, int, int]:
     """mathtext 渲染（无定界符的）公式 → (透明底 PNG 字节, 逻辑宽, 逻辑高)。
 
     布局按 72dpi（px==pt）一次解析，出图按 _RENDER_DPI；width/height 属性按
     _LOGICAL_DPI 收算——150% 缩放屏上 logical×1.5 正好等于 PNG 自然像素。
+    ``color`` = 字色（深色主题下墨色是浅色，黑字会看不见）。
     失败抛异常（调用方按契约回退显示源码）。
     """
     parser, Figure, FontProperties = _init()
@@ -112,7 +113,7 @@ def _render(src: str) -> tuple[bytes, int, int]:
         raise ValueError("empty math box")
     fig = Figure(figsize=(width / 72.0, height / 72.0))
     # 与 matplotlib.math_to_image 同款定位：基线在盒底 depth 处、左缘贴边
-    fig.text(0, depth / height, tex, fontproperties=prop, color="#000000")
+    fig.text(0, depth / height, tex, fontproperties=prop, color=color)
     buf = io.BytesIO()
     fig.savefig(buf, dpi=_RENDER_DPI, format="png",
                 facecolor="none", edgecolor="none")
@@ -124,13 +125,14 @@ def _render(src: str) -> tuple[bytes, int, int]:
     return png, logical_w, logical_h
 
 
-def _formula_html(src: str, raw: str) -> str:
+def _formula_html(src: str, raw: str, color: str) -> str:
     """公式 → `<img data URI>`；渲染失败 → 原样转义的源码（含定界符）。"""
-    cached = _render_cache.get(raw)
+    key = (raw, color)
+    cached = _render_cache.get(key)
     if cached is not None:
         return cached
     try:
-        png, w, h = _render(src)
+        png, w, h = _render(src, color)
     except Exception:                      # 契约：任何渲染失败都回退显示源码
         out = _html.escape(raw)
     else:
@@ -139,34 +141,38 @@ def _formula_html(src: str, raw: str) -> str:
                f' alt="{_html.escape(f"${src}$", quote=True)}"/>')
     if len(_render_cache) > 512:           # 防长会话无限涨
         _render_cache.clear()
-    _render_cache[raw] = out
+    _render_cache[key] = out
     return out
 
 
-def extract_math(text: str) -> tuple[str, list[str]]:
+def extract_math(text: str, color: str | None = None) -> tuple[str, list[str]]:
     """把公式从文本里抽走，返回 (占位文本, 公式 HTML 列表)。
 
+    ``color`` = 公式字色（跟主题墨色走；默认取当前主题正文色）。
     顺序敏感：块级先于行内（`$$..$$` 不许被单 `$` 规则半路截胡）。
     **代码区（围栏块 / 4 空格缩进块）原样跳过**：块内的 `$` 不是公式、块内的 `\\$` 也不该被
     还原成字面 `$`——这是三端统一口径（移动/扩展的 md.js 也是「块内不解析」；本轮对齐，
     2026-10-10）。
     """
+    if color is None:
+        from . import theme
+        color = theme.current().ink
     blocks: list[str] = []
     parts: list[str] = []
     pos = 0
     for start, end in _code_ranges(text):
-        parts.append(_extract_math_segment(text[pos:start], blocks))
+        parts.append(_extract_math_segment(text[pos:start], blocks, color))
         parts.append(text[start:end])          # 代码区原样留给 python-markdown 的
         pos = end                              # fenced_code / 缩进块去渲染
-    parts.append(_extract_math_segment(text[pos:], blocks))
+    parts.append(_extract_math_segment(text[pos:], blocks, color))
     return "".join(parts), blocks
 
 
-def _extract_math_segment(segment: str, blocks: list[str]) -> str:
+def _extract_math_segment(segment: str, blocks: list[str], color: str) -> str:
     """单段（非代码区）内摘公式；占位符序号在整篇的 blocks 上连续。"""
     def _sub(match: re.Match) -> str:
         raw = match.group(0)
-        blocks.append(_formula_html(match.group(1), raw))
+        blocks.append(_formula_html(match.group(1), raw, color))
         return _PH.format(len(blocks) - 1)
 
     out = segment
@@ -278,14 +284,21 @@ def placeholder_remote_images(html: str) -> str:
 #   · width 走属性不走 CSS —— Qt 吃 width="100%"（表撑满气泡，与另两端 min-width:100% 同效），
 #     但 style 里的 width:100% 被忽略（实测表框 313px vs 599px）。
 _TABLE_STYLE = (
-    "<style>table{border:1px solid #E6E8F2;border-collapse:collapse;font-size:14.5px;}"
+    "<style>table{border:1px solid $line;border-collapse:collapse;"
+    "font-size:14.5px;}"
     "th,td{padding:5px 9px;}"
-    "th{background-color:#F1F3FB;font-weight:bold;}</style>"
+    "th{background-color:$chip;font-weight:bold;}</style>"
 )
 
 
 def style_tables(html: str) -> str:
-    """markdown 结果带表格就补上网格线样式 + 撑满宽度；没有表格原样返回（调用方无感知）。"""
+    """markdown 结果带表格就补上网格线样式 + 撑满宽度；没有表格原样返回（调用方无感知）。
+
+    线/表头底色跟主题（深色底上浅色线，见 theme.DARK）。
+    """
     if "<table" not in html:
         return html
-    return _TABLE_STYLE + html.replace("<table>", '<table width="100%">')
+    from . import theme
+    c = theme.current()
+    head = theme.qss(_TABLE_STYLE, c, chip=c.surface_3)
+    return head + html.replace("<table>", '<table width="100%">')
