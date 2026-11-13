@@ -29,8 +29,8 @@ a = Analysis(
     binaries=[],
     # 包内图标（app_icon.py 用 __file__ 找 assets/，冻结后要同相对深度）
     datas=[(ASSETS, "spore_client/assets")],
-    # 懒加载/间接引用，静态分析可能漏（qrcode、PIL 子模块、全局热键库）
-    hiddenimports=["qrcode", "PIL.ImageDraw", "PIL.ImageGrab", "keyboard"],
+    # 懒加载/间接引用，静态分析可能漏（PIL 子模块、全局热键库）
+    hiddenimports=["PIL.ImageDraw", "PIL.ImageGrab", "keyboard"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

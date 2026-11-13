@@ -1,124 +1,39 @@
 # Spore
 
-截图搜题桌面应用：框选题目 → 大模型读题作答 → 自动联网核实 → 全程留档，可继续追问。
+截图搜题桌面应用（Windows）。按 `Alt+S` 框选题目，大模型分两阶段作答（初答 → 联网核实），
+回答与历史会话都留在本机。
 
-## 组成
+**v1.5.0 起是单机应用**：没有后端服务、没有账号、没有手机同步，也不依赖 MySQL / JDK / Tomcat。
+所有数据在一个 SQLite 文件里，启动即用。
 
-| 部分 | 技术 | 说明 |
-| --- | --- | --- |
-| 后端 `src/` | 严格 SSM（Spring + SpringMVC + MyBatis-Plus）+ MySQL + Tomcat 9 | 本机 8080 提供 REST 接口、题图存储、账号与同步；**无 Spring Boot** |
-| 客户端 `client/` | Python 3.13 + PySide6（Fluent Widgets） | 截图作答、搜题记录、设置、帮助 |
+## 下载与安装
 
-## 部署（从 Release 安装）
-
-到 [Releases](https://github.com/Offblink/Spore-GUI/releases) 下载 **`Spore-<版本>-win64.zip`（一体化包）**，
-内含客户端目录（`Spore.exe` + `_internal\` 依赖）、后端 war、自带 Tomcat 9、`schema.sql`（建库脚本）与
-`db.properties.example`（数据库口令模板）。首次装机按下四步走，**只需做一次**。
-
-### 第 0 步 · 装前提
-
-| 依赖 | 版本 | 说明 |
-| --- | --- | --- |
-| **JDK** | 8 | 后端是严格 SSM（Spring 5 + Servlet 4 `javax`），跑在自带 Tomcat 9 上，必须 JDK 8 |
-| **MySQL** | 5.7+ / 8.x | 存账号、搜题记录、题图索引；装完记得让它开机自启 |
-
-> 没装 JDK 或 MySQL 也能先把窗口打开看说明——客户端起不来后端时**不弹红叉、不退出**，
-> 会把原因写进界面（详见下方「启动失败怎么办」）。
-
-### 第 1 步 · 下载解压
-
-把 zip **整个解压到一个固定目录**，例如 `C:\Spore\`。目录里应该有：
+Release 里的 `Spore-<版本>-win64.zip` 解压后用里面的 `Spore.exe` 启动（解压出来是一个文件夹）：
 
 ```
 Spore-<版本>-win64\
-├─ Spore.exe                    ← 客户端
-├─ _internal\                   ← 客户端依赖（PySide6 等）
-├─ spore-backend-<版本>.war      ← 后端（严格 SSM 的 war）
-├─ tomcat\                       ← 自带 Tomcat 9（后端容器，客户端首启自动配置）
-├─ schema.sql                   ← 建库脚本
-├─ db.properties.example        ← 数据库口令模板
+├─ Spore.exe
+├─ _internal\      ← 依赖目录，别删
 └─ README.txt
 ```
 
-> **别把 `Spore.exe` 单独挪出文件夹**：客户端按 exe 所在目录找后端 war 与 `tomcat\`，依赖也从 `_internal\` 加载。
-> 要挪就整个文件夹一起搬。装进 `C:\Program Files\` 也没问题（不可写时数据自动落到 `%LOCALAPPDATA%\Spore\`）。
+> **别把 `Spore.exe` 单独挪出文件夹**：它依赖同目录的 `_internal\`。
 
-### 第 2 步 · 装好 MySQL
+首次打开进「设置」页粘贴大模型 API Key（回车保存），点「测试连接」确认能通即可。
+之后关窗口只是收进托盘，托盘右键「退出」才真正退出。
 
-只要装上 MySQL 并让它在本机跑着（默认 `localhost:3306`）即可——**不用手动建库、
-不用导入任何 SQL**。首次启动时 Spore 会自动建库 `spore_cms`、建出 7 张表
-（`user` `role` `permission` `category` `article` `sys_config` `op_log`）并配好角色与权限，
-全程幂等、不会动到你已有的数据。账号与初始数据都由应用产生——
-**首个注册的用户自动成为管理员**（见第 4 步）。
+## 数据与隐私
 
-> 这一步要求你填进 Spore 的 MySQL 账号**有建库权限**（通常 `root` 就行）。
-> 若账号能连上但没有建库权限，后端会提示「自动建库失败」，换个有权限的账号即可。
+全部只在本机，不上传、不联网同步：
 
-> `docs/schema.sql` 仍随包提供，但它只是**手动重建参考**（先 `DROP TABLE` 再 `CREATE`，
-> **重跑会清空该库所有数据**）。日常装机与升级都用不着它——自动建库已覆盖；
-> 只有你想彻底清空重来时才手动跑它，跑前确认数据可以丢。
+| 路径（`%LOCALAPPDATA%\Spore\`） | 内容 |
+| --- | --- |
+| `spore.db` | 搜题记录与科目（唯一数据文件） |
+| `ui_settings.json` | 模型 / 检索设置，**含 API Key，勿外传** |
+| `captures\` | 截图缓存 |
+| `logs\client.log` | 运行日志 |
 
-### 第 3 步 · 启动并配置数据库
-
-双击 `Spore.exe`——后端由客户端自己拉起（**不弹命令行窗口**），关客户端即停后端。
-
-- **v1.3.4 及以后**：如果客户端发现连不上数据库（后端起不来），会**自动弹出「数据库配置」页**，
-  默认只需填**账号 + 密码**，点「保存并重启后端」——Spore 会自己建库、建表、配好角色并重启后端，
-  **全程不用手动改任何配置文件，也不用先在 MySQL 里建库**。地址 / 端口 / 库名已按本应用的默认值
-  （`localhost:3306/spore_cms`）预填，收在「高级设置」里，只有改过端口或库名的装机才需要点开。
-  填对了就直接进登录页；填错了页面会提示「数据库仍然连不上」，改完再存一次即可。
-
-  ![数据库配置页](docs/screenshots/db-config-page.png)
-
-  > 也可以提前手动配好：复制 `db.properties.example` 为 `db.properties`（war 同目录），
-  > 填入 MySQL 账号口令，双击 `Spore.exe` 就会直接进登录页（库与表仍由应用自动建）。
-  > 口令只留在你本机这个文件里，**不进 git、不随包分发**。
-
-- **v1.3.3 及以前**：没有自动建库——必须先手动跑 `schema.sql` 建好库表，再在配置页填账号密码。
-
-### 第 4 步 · 登录 / 注册
-
-首次使用点「注册」创建账号——**第一个注册的用户自动成为管理员**，之后用「登录」进入主界面。
-
-![登录页](docs/screenshots/login-page.png)
-
-进入主界面后，打开「设置」页粘贴大模型 API Key（回车保存），点「测试连接」确认能通，即可开始截图搜题。
-
-### 启动失败怎么办
-
-客户端起不来后端时不会直接退出，会把原因显示在界面上。常见三种：
-
-| 界面提示 | 原因 | 处置 |
-| --- | --- | --- |
-| 弹出「数据库配置」页 | 连不上 MySQL（口令错 / MySQL 没起 / 库名不对） | 在页里改对连接信息并保存；或确认 MySQL 服务已启动 |
-| 缺 war 提示 | `Spore.exe` 不在 war 同目录 / 缺 `tomcat\` | 把整个解压目录放一起，别单独挪 exe |
-| 缺 Java 提示 | 没装 JDK 8 | 装 JDK 8，或把 `java` 加进 `PATH` |
-
-详细堆栈都在 `logs\backend-console.log`（与 `Spore.exe` 同目录，装进 Program Files 时在 `%LOCALAPPDATA%\Spore\logs\`）。
-
-## 快速开始
-
-1. 准备环境：JDK 8、Maven、Python 3.13（本机已装好即可）。
-2. 构建后端 war：`mvn clean package -DskipTests`（客户端要从 `target/` 拿 war 起后端）。
-3. 告诉客户端你本机的 Tomcat 9 在哪：仓库根写一行 `tomcat.home`（内容是 Tomcat 安装目录，
-   已 gitignore），或设环境变量 `SPORE_TOMCAT`。
-4. 双击仓库根目录的 `start-spore.bat` 拉起客户端——**后端由客户端自己起，不弹命令行窗口**，
-   退出客户端即停后端；8080 上已经跑着真的 Spore 应用时它探活通过就直接复用。
-5. 首次使用：打开客户端「设置」页，粘贴大模型 API Key（回车保存），点「测试连接」确认能通。
-
-### 从源码构建客户端 exe
-
-```bash
-# 1) 干净构建 venv（别用开发 venv：它会带进全局 PyQt5 / torch）
-python -m venv --without-pip client/.venv-build
-python -m pip --python client/.venv-build/Scripts/python.exe install \
-  "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" \
-  pyinstaller httpx markdown qrcode Pillow keyboard
-# 2) 构建 + 自检（图标、产物、窗口存活、sha256）
-python client/tools/build_exe.py
-```
-
-产物 `client/dist/Spore/`（onedir 目录：`Spore.exe` + `_internal\`，不再产单文件 exe）；打包配方在 `client/Spore.spec`。
+备份与恢复：退出程序后复制 `spore.db`；升级版本前程序会留一份 `spore.db.bak`。
 
 ## 功能
 
@@ -129,9 +44,6 @@ python client/tools/build_exe.py
   「批量选择」进多选（单选框涂抹连选、底栏**全选/取消全选**只作用于当前筛选），批量收藏·移入·删除
 - **继续追问**：在记录页或回答浮窗里接着聊，回答落回同一会话
 - **手动核实**：关掉自动核实后，点「核实一下」再联网核实
-- **手机扫码配对**：点主界面左下角头像出二维码，手机扫码接入
-  （二维码里是电脑的**局域网 IP**；手机需与电脑同一网络，首次连接被防火墙拦就放行 8080）
-- **题库目录可切换**：题图随目录整体迁移（设置页）
 
 ## 快捷键
 
@@ -140,25 +52,74 @@ python client/tools/build_exe.py
 | `Alt+S` | 截图并可框选，发起一题 |
 | `Alt+Z` | 呼出 / 收起回答浮窗 |
 
-## 配置与数据
+## 架构
 
-- 设置与日志：`%LOCALAPPDATA%\Spore\`
-  - `ui_settings.json`：模型、核实、检索等设置，**内含 API Key，请勿外传**
-  - `logs\`：运行日志；`captures\`：截图缓存
-- 题图：后端「题库目录」（默认 `data/attachments`，设置页可切换）
-- 数据库口令：写在仓库根（或 war 同目录）的 `db.properties`（不进 git）
+单进程 PySide6 应用；界面直接读写本机 SQLite（`spore_client/store.py`，WAL），
+不监听任何端口，也没有后台服务：
+
+```
+Spore.exe
+├─ spore_client/       UI（记录页 / 设置 / 帮助 / 回答浮窗）+ 作答链路
+├─ spore_client/store.py   SQLite 数据层（文章、科目）
+└─ %LOCALAPPDATA%\Spore\spore.db
+```
+
+## 从源码运行
+
+```bash
+cd client
+.venv/Scripts/python.exe -m spore_client.main
+```
+
+依赖：Python 3.13、PySide6 6.10.2、PySide6-Fluent-Widgets 1.11.3、httpx、markdown、Pillow、keyboard。
+源码运行同样把数据写进 `%LOCALAPPDATA%\Spore\`（可用 `SPORE_HOME` 重定向）。
+
+### 门禁
+
+```bash
+cd client
+ruff check .
+.venv/Scripts/python.exe -m pytest
+```
+
+### 构建 exe
+
+```bash
+# 干净构建 venv（别用开发 venv：它会带进全局 PyQt5 / torch）
+python -m venv --without-pip client/.venv-build
+python -m pip --python client/.venv-build/Scripts/python.exe install \
+  "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" \
+  pyinstaller httpx markdown Pillow keyboard
+
+python client/tools/build_exe.py               # 产物 client/dist/Spore/
+python client/tools/make_release_bundle.py    # 发行 zip
+python client/tools/factory_check.py          # 出厂检查（必须用 .venv-build）
+```
+
+## 从 1.4.x 升级
+
+1.4.x 的数据在 MySQL（`spore_cms`）里。一次性迁移（只读源库、逐行校验）：
+
+```bash
+cd client
+.venv/Scripts/python.exe tools/migrate_mysql_to_sqlite.py --force
+```
+
+迁移后旧库保持原样，可直接回滚旧版本。1.4.x 的账号、角色、同步状态与操作日志不会迁移
+（这些功能已下线）；题图只有仍在本机截图缓存里的那些还能显示。
 
 ## 目录结构
 
 ```
 spore-gui/
-├─ src/main/java/…       后端（REST / 存储 / 同步 / 账号）
-├─ client/spore_client/  客户端（answer 引擎、records 记录页、settings 设置、help_page 帮助）
-├─ client/tests/         客户端测试
-├─ start-spore.bat       一键启动客户端（后端随客户端自动起停）
-└─ pom.xml
+├─ client/
+│  ├─ spore_client/       客户端（store.py 数据层、records / settings / answer 等）
+│  ├─ tests/              pytest
+│  └─ tools/              构建、发版、迁移脚本
+├─ docs/
+└─ README.md
 ```
 
 ## 许可
 
-课程设计项目，仅供学习使用。
+MIT

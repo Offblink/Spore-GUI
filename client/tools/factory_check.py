@@ -1,22 +1,19 @@
-"""出厂检查：发行 zip 的红线（口径见 skill spore-gui-release 步骤 6）。
+"""出厂检查：发行 zip 的红线（2026-11-13 起无后端、无账号、无同步）。
 
 用法（必须用构建 venv——脚本要读 exe 的 PYZ）：
     MSYS_NO_PATHCONV=1 cmd.exe /c ".venv-build\\Scripts\\python.exe tools\\factory_check.py"
 （在 client/ 下跑；先跑过 tools/make_release_bundle.py）
 
 红线（任一不过 → 退出码 1）：
-1. zip 外层没有任何 .bat；
-2. db.properties（真实 DB 口令文件）在任何层级都不许出现——
-   含嵌套 jar/war 再钻一层（v1.1.1 就是 jar 内嵌它进了公开 release）；.example 模板除外；
-3. 本机 db.properties 里的真实口令不出现在任何 entry 字节里；
-   必须打印「待检口令 N 个」且 N>=1——N=0 = 基线没提取到 = 检查空转，按 FAIL 算；
-4. 关键件抽查分两层（onedir 形态决定的，别混）：
-   - 磁盘层 = zip 路径：_internal 里的资产/Qt/OCR 模型与原生件；
-   - PYZ 层 = exe 内字节码：qrcode/markdown/keyboard/spore_client 这类纯 Python 包
-     只活在 exe 的 PYZ 里，zip 路径上根本没有。拿 zip 子串凑数会撞
-     dist-info、qtvirtualkeyboardplugin.dll 这类假阳性（2026-10-11 实测踩过）。
+1. zip 内任何层级无 .bat（Tomcat 那套已下线，发行包也不该带脚本）；
+2. 本机私有文件不进包：db.properties / application-local.yml / ui_settings.json /
+   device.token（历史遗留物与真实口令都可能藏在里面）；嵌套 jar/war 再钻一层查；
+3. 关键件抽查分两层（onedir 形态决定的，别混）：
+   - 磁盘层 = zip 路径：_internal 里的资产/Qt 原生件；
+   - PYZ 层 = exe 内字节码：markdown/keyboard/spore_client 这类纯 Python 包
+     只活在 exe 的 PYZ 里，zip 路径上根本没有。
 
-口令只在内存比对，绝不 print。路径一律用 Path / 分段拼（别写字面反斜杠）。
+不打印任何口令/key 内容。
 """
 
 from __future__ import annotations
@@ -30,9 +27,14 @@ import zipfile
 from pathlib import Path
 
 CLIENT = Path(__file__).resolve().parents[1]        # client/
-REPO = CLIENT.parent                                 # 仓库根
 DIST = CLIENT / "dist"
-DB_PROPS = REPO / "db.properties"
+
+FORBIDDEN_NAMES = {
+    "db.properties",
+    "application-local.yml",
+    "ui_settings.json",
+    "device.token",
+}
 
 # 磁盘层标记：子串必须至少命中一条 zip entry 路径
 DISK_MARKERS = (
@@ -43,7 +45,7 @@ DISK_MARKERS = (
     "PySide6",                      # Qt 原生件
 )
 # PYZ 层标记：纯 Python 包，只查 exe 内字节码（zip 路径上没有）
-PYZ_MARKERS = ("qrcode", "markdown", "keyboard", "spore_client")
+PYZ_MARKERS = ("markdown", "keyboard", "spore_client")
 
 
 def version() -> str:
@@ -54,39 +56,21 @@ def version() -> str:
     return m.group(1)
 
 
-def extract_secrets() -> list[str]:
-    """从本机口令文件提取所有 password 值（不回显）。"""
-    if not DB_PROPS.is_file():
-        sys.exit(f"FAIL  读不到基线口令文件：{DB_PROPS}（没基线 = 检查空转）")
-    text = DB_PROPS.read_text(encoding="utf-8")
-    found = re.findall(r"(?im)^[\w.-]*password\s*=\s*(.+?)\s*$", text)
-    out: set[str] = set()
-    for v in found:
-        v = v.split(" #", 1)[0].strip().strip("'\"")   # 去行尾注释与引号
-        if v and v != "CHANGE_ME":                     # 模板占位不算真口令
-            out.add(v)
-    return sorted(out)
-
-
-def scan_bytes(data: bytes, secrets: list[bytes], where: str,
-               depth: int, problems: list[str]) -> None:
-    """扫一段字节：查口令、查 db.properties；jar/war 内再钻一层。"""
-    base = where.rsplit("/", 1)[-1]
-    if base.lower() == "db.properties":
-        problems.append(f"发现 db.properties：{where}")
-    for i, s in enumerate(secrets, 1):
-        if s in data:
-            problems.append(f"口令 #{i} 出现在 {where}")
-    if depth < 4 and base.lower().endswith((".jar", ".war")):
+def scan_bytes(data: bytes, where: str, depth: int, problems: list[str]) -> None:
+    """查私有文件名；jar/war 内再钻一层（历史遗留包里可能还有）。"""
+    base = where.rsplit("/", 1)[-1].lower()
+    if base in FORBIDDEN_NAMES:
+        problems.append(f"发现私有文件：{where}")
+    if depth < 4 and base.endswith((".jar", ".war")):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as z2:
                 for info2 in z2.infolist():
                     if info2.is_dir():
                         continue
-                    scan_bytes(z2.read(info2), secrets,
-                               f"{where}!/{info2.filename}", depth + 1, problems)
+                    scan_bytes(z2.read(info2), f"{where}!/{info2.filename}",
+                               depth + 1, problems)
         except zipfile.BadZipFile:
-            pass                            # 非 zip 的 .jar 直接跳过（没见过，不炸）
+            pass                            # 非 zip 的 .jar 直接跳过
 
 
 def pyz_module_names(exe_bytes: bytes) -> set[str]:
@@ -113,12 +97,6 @@ def main() -> int:
     if not zip_path.is_file():
         sys.exit(f"FAIL  缺发行 zip：{zip_path}（先跑 tools/make_release_bundle.py）")
 
-    secrets = [s.encode("utf-8") for s in extract_secrets()]
-    print(f"待检口令 {len(secrets)} 个（来源 {DB_PROPS.name}，只比对不回显）")
-    if len(secrets) < 1:
-        print("FAIL  待检口令 0 个：基线口令没提取到，检查会空转")
-        return 1
-
     problems: list[str] = []
     paths: list[str] = []
     exe_bytes: bytes | None = None
@@ -128,19 +106,17 @@ def main() -> int:
                 continue
             name = info.filename
             paths.append(name)
-            # 红线 1：外层不许有启动脚本
             if name.rsplit("/", 1)[-1].lower().endswith(".bat"):
                 problems.append(f"zip 内有 .bat：{name}")
             data = z.read(info)
             if name.rsplit("/", 1)[-1].lower() == "spore.exe":
                 exe_bytes = data
-            # 红线 2 + 3：db.properties 与口令，逐 entry（jar/war 会钻进去）
-            scan_bytes(data, secrets, name, 1, problems)
+            scan_bytes(data, name, 1, problems)
 
-    # 红线 4a：磁盘层（zip 路径）
+    # 红线 3a：磁盘层（zip 路径）
     missing = [m for m in DISK_MARKERS if not any(m in p for p in paths)]
 
-    # 红线 4b：PYZ 层（exe 内字节码）
+    # 红线 3b：PYZ 层（exe 内字节码）
     pyz_note = "PYZ 层未查（zip 里没找到 Spore.exe？）"
     if exe_bytes is not None:
         names = pyz_module_names(exe_bytes)

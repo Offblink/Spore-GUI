@@ -9,18 +9,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
-    QLabel,
     QMenu,
-    QPushButton,
     QSystemTrayIcon,
-    QVBoxLayout,
 )
 from qfluentwidgets import (
-    CaptionLabel,
     FluentIcon,
     FluentWindow,
     InfoBar,
@@ -31,35 +26,17 @@ from .answer.engine import AgentEngine
 from .answer.session import msgs_of, session_from_article
 from .answer.settings import load_from_env
 from .answer_window import AnswerWindow
-from .api import ApiClient, ApiError, NetworkError
 from .app_icon import app_icon
 from .capture import CaptureController, HotkeyManager
 from .help_page import HelpPane
 from .log import get_logger
 from .log_page import LogPane
-from .pairing import LanTask, api_base_for_phone, build_payload, initial_of, payload_image
 from .records import RecordsPane
 from .settings import SettingsPane
 from .settings_store import apply_to_llm
+from .store import Store
 
 LOG = get_logger()
-
-
-class _MeTask(QThread):
-    """取 /users/me（头像昵称首字母用）——主线程不发网络请求。"""
-
-    ok = Signal(dict)
-    failed = Signal(str)
-
-    def __init__(self, api: ApiClient, parent=None):
-        super().__init__(parent)
-        self.api = api
-
-    def run(self):
-        try:
-            self.ok.emit(self.api.me())
-        except (ApiError, NetworkError) as e:
-            self.failed.emit(str(e))
 
 
 class MainWindow(FluentWindow):
@@ -69,9 +46,9 @@ class MainWindow(FluentWindow):
     # 线程里砸 widget（黑窗/卡顿/落库定时器建错线程的根因），AutoConnection 才会排队
     engineEvent = Signal(object)
 
-    def __init__(self, api: ApiClient, parent=None):
+    def __init__(self, store: Store, parent=None):
         super().__init__(parent)
-        self.api = api
+        self.store = store
         self.setWindowTitle("Spore")
         # 用户 2026-10-02：「GUI 应用的长宽都不够」——默认 1280×860，下限 1024×700
         self.resize(1280, 860)
@@ -90,9 +67,9 @@ class MainWindow(FluentWindow):
         self._placeholders: dict[str, str] = {}  # sess.id → 开局占位行 id（P3）
         self._ph_filled: set[str] = set()  # 占位行已补过初答内容的回合（P3 增强，每回合只补一次）
 
-        self.records = RecordsPane(api)
+        self.records = RecordsPane(store)
         self.log_page = LogPane()
-        self.settings = SettingsPane(api, self.llm_settings)
+        self.settings = SettingsPane(store, self.llm_settings)
         self.help_page = HelpPane()
 
         # 四页对齐左索引：搜题记录 / 日志 / 设置 / 帮助
@@ -111,7 +88,7 @@ class MainWindow(FluentWindow):
         self.engine = AgentEngine(self.llm_settings, self.engineEvent.emit)
         self.answer_window = AnswerWindow(self.llm_settings)
         self.answer_window.attach_engine(self.engine)
-        self.answer_window.attach_api(api)  # 面板 💬 会话列表 / ★ 收藏要打后端
+        self.answer_window.attach_store(store)  # 面板 💬 会话列表 / ★ 收藏
         self.answer_window.followupRequested.connect(self._followup)
         self.records.followupRequested.connect(self._records_followup)
         self.records.cancelRequested.connect(self.engine.cancel)
@@ -141,23 +118,6 @@ class MainWindow(FluentWindow):
         tray.show()
         self._tray = tray  # 防 GC
 
-        # ---- 左下角昵称头像（2026-10-03 反馈）：点出扫码配对二维码，
-        # 取代设置页的二维码 + 手输 token（纯二维码，手输废弃） ----
-        self.avatar_btn = QPushButton("?", self)
-        self.avatar_btn.setFixedSize(40, 40)
-        self.avatar_btn.setCursor(Qt.PointingHandCursor)
-        self.avatar_btn.setToolTip("手机扫码配对")
-        self.avatar_btn.setStyleSheet(
-            "QPushButton{background:#ec4899; color:#ffffff; border:none;"
-            " border-radius:20px; font-size:16px; font-weight:650;}"
-            "QPushButton:hover{background:#db2777;}")
-        self.avatar_btn.clicked.connect(self._toggle_qr_popup)
-        self._qr_pop: QFrame | None = None   # 点开才建（点击外部自关）
-        self._qr_hide_ts = 0.0               # 外部点击刚关过 → 别秒重开
-        self._me_task = _MeTask(self.api, self)
-        self._me_task.ok.connect(self._on_me)
-        self._me_task.start()
-
         if self.llm_settings.errors:
             self._llm_errors = InfoBar.warning(  # 存引用防 GC
                 "作答未就绪", "；".join(self.llm_settings.errors),
@@ -178,95 +138,6 @@ class MainWindow(FluentWindow):
         self._booted.add(key)
         if widget is self.log_page:
             self.log_page.refresh()
-        elif widget is self.settings:
-            self.settings.refresh()
-
-    # ---------- 左下角头像 → 扫码配对（非模态弹窗，2026-10-03 反馈） ----------
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        # super().__init__/布局阶段也会进这里，头像可能还没建
-        btn = getattr(self, "avatar_btn", None)
-        if btn is None:
-            return
-        # 头像恒贴窗口左下角（用户点名位置；窗口调大后也不跑偏）
-        btn.move(6, self.height() - btn.height() - 6)
-
-    def _on_me(self, me: dict):
-        nick = str(me.get("nickname") or me.get("username") or "")
-        self.avatar_btn.setText(initial_of(nick))
-        if nick:
-            self.avatar_btn.setToolTip(f"{nick} · 手机扫码配对")
-
-    def eventFilter(self, obj, ev):
-        # super().__init__ 期间 Qt 就会把事件送进来（qframeless 过滤器链），
-        # 那时 _qr_pop 还没建——漏了这个守卫整个 FluentWindow 构造直接崩
-        # （2026-10-03「客户端都跑不起来」根因）
-        if obj is getattr(self, "_qr_pop", None) and ev.type() == QEvent.Hide:
-            self._qr_hide_ts = time.monotonic()   # 外部点击把它收掉了
-        return super().eventFilter(obj, ev)
-
-    def _toggle_qr_popup(self):
-        if self._qr_pop is not None and self._qr_pop.isVisible():
-            self._qr_pop.hide()
-            return
-        if time.monotonic() - self._qr_hide_ts < 0.4:
-            # 刚被「点外部」收掉：同一轮点击的后半程落在头像上，
-            # 这里再开会变成永远关不上（2026-10-03 反馈：要点击显示再点击关闭）
-            return
-        self._show_qr_popup()
-
-    def _show_qr_popup(self):
-        pop = self._qr_pop
-        if pop is None:
-            # 非模态、点外部自关。半透明**外窗**只当透明画布——顶层 QSS 背景
-            # 在 translucent 下不画（2026-10-03 反馈：整窗透了、圆角也没了），
-            # 白底+圆角+描边都画在**内层卡片**上
-            pop = QFrame(self, Qt.Popup | Qt.FramelessWindowHint
-                         | Qt.WindowStaysOnTopHint)
-            pop.setAttribute(Qt.WA_TranslucentBackground, True)
-            pop.installEventFilter(self)
-            card = QFrame(pop)
-            card.setObjectName("qrCard")
-            card.setStyleSheet(
-                "#qrCard{background:#ffffff; border:1px solid #e6e8f2;"
-                " border-radius:14px;}")
-            outer = QVBoxLayout(pop)
-            outer.setContentsMargins(0, 0, 0, 0)
-            outer.addWidget(card)
-            box = QVBoxLayout(card)
-            box.setContentsMargins(14, 12, 14, 12)
-            box.setSpacing(8)
-            self._qr_img = QLabel("取 token…")
-            self._qr_img.setFixedSize(180, 180)
-            self._qr_img.setAlignment(Qt.AlignCenter)
-            self._qr_img.setStyleSheet(
-                "border:1px solid #e6e8f2; border-radius:8px;"
-                " background:#ffffff; color:#7c819c; font-size:13px;")
-            box.addWidget(self._qr_img)
-            tip = CaptionLabel("手机扫码配对 · 10 分钟内扫")
-            tip.setStyleSheet("color:#7c819c;")
-            box.addWidget(tip)
-            self._qr_pop = pop
-        pop.adjustSize()
-        top = self.avatar_btn.mapToGlobal(QPoint(0, 0))  # 弹在按钮上方
-        pop.move(top.x() - 8, top.y() - pop.height() - 8)
-        pop.show()
-        self._qr_img.setText("取 token…")
-        self._qr_lan = LanTask(self.api, self)  # 每次点开取新鲜 token
-        self._qr_lan.ok.connect(self._on_qr_token)
-        self._qr_lan.failed.connect(
-            lambda m: self._qr_img.setText(f"失败：{m}"))
-        self._qr_lan.start()
-
-    def _on_qr_token(self, token: str):
-        if self._qr_pop is None or not self._qr_pop.isVisible():
-            return  # 等 token 期间被收掉了就别再刷
-        try:
-            # 载荷里的 api 换成局域网 IP（桌面自己用 127.0.0.1，手机扫到回环就废了）
-            self._qr_img.setPixmap(
-                payload_image(build_payload(api_base_for_phone(self.api.base), token)))
-        except ImportError:
-            self._qr_img.setText("缺 qrcode 库")
 
     # ---------- 热键 ----------
     def _toggle_answer_window(self):
@@ -408,26 +279,22 @@ class MainWindow(FluentWindow):
             messages = [m.to_dict() for m in sess.messages]
             put = bool(sess.backend_id)
             if sess.backend_id:
-                # 历史接续回合：后端 ArticleReq.messages 非 null 即重写正文（§8-2）；
-                # 接续会话不带新题图——占位回合（ph）的题图在这是首推点
-                art = self.api.update_article(
+                # 历史接续回合：messages 非 None 即重写正文；题图路径本来就在
+                # 消息里（imagePath），本地库不需要再「上传」一步
+                art = self.store.update_article(
                     sess.backend_id, title=sess.title,
                     status=sess.status or "done", messages=messages)
                 art_id = sess.backend_id
-                if ph and sess.image_path:
-                    self.api.push_attachment(art_id, sess.image_path)
             else:
-                art = self.api.create_article({
+                art = self.store.create_article({
                     "title": sess.title,
                     "status": sess.status or "done",
                     "messages": messages,
                 })
                 art_id = art.get("id") if isinstance(art, dict) else None
-                # 回写 backend_id：否则同一会话的下一个追问回合会再次 POST，
+                # 回写 backend_id：否则同一会话的下一个追问回合会再次新建，
                 # 造出「两个同名会话：一个第一次对话、一个两次一起」（2026-10-05 实测 bug）
                 sess.backend_id = str(art_id or "")
-                if art_id and sess.image_path:
-                    self.api.push_attachment(art_id, sess.image_path)
             if art_id:
                 self._unread_account(sess, str(art_id))
                 if self.engine.session is sess:
@@ -452,7 +319,7 @@ class MainWindow(FluentWindow):
             return  # 已有行 / 回合已收尾（极快失败竞态）——不制造没人收尾的占位
         t0 = time.monotonic()
         try:
-            art = self.api.create_article({
+            art = self.store.create_article({
                 "title": sess.title,
                 "status": "answering",
                 "messages": [],
@@ -487,7 +354,7 @@ class MainWindow(FluentWindow):
         if not sess.backend_id or sess.id not in self._placeholders:
             return
         try:
-            self.api.update_article(
+            self.store.update_article(
                 sess.backend_id, title=sess.title,
                 status=sess.status or "answering",
                 messages=[m.to_dict() for m in sess.messages])
@@ -505,13 +372,13 @@ class MainWindow(FluentWindow):
         if not art_id:
             return
         try:
-            self.api.delete_article(art_id)
+            self.store.delete_article(art_id)
             sess.backend_id = ""
             LOG.info("placeholder dropped id=%s", art_id)
         except Exception as e:  # noqa: BLE001
             LOG.error("drop placeholder failed id=%s: %s", art_id, e)
             try:
-                self.api.update_article(
+                self.store.update_article(
                     art_id, status=sess.status or "aborted",
                     messages=[m.to_dict() for m in sess.messages])
             except Exception as e2:  # noqa: BLE001

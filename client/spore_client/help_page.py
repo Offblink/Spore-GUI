@@ -1,4 +1,4 @@
-"""帮助页（2026-10-03 用户要求）：上手三步、快捷键、页面速览、配对与常见问题。
+"""帮助页（2026-10-03 用户要求）：上手三步、快捷键、页面速览、数据位置与常见问题。
 
 文案纪律：面向读者、通俗简洁，不写开发内幕；卡片样式复用设置页，
 两页观感一致（build_card / kbd_badge / setting_label 同源）。
@@ -74,37 +74,27 @@ class HelpPane(QWidget):
             lay.addWidget(setting_label("　• " + line))
         for line in (
             "日志：程序运行日志，遇到问题可以来这里看。",
-            "设置：模型、核实方式、检索与题库目录都在这里。",
+            "设置：模型、核实方式与检索都在这里。",
         ):
             lay.addWidget(setting_label(line))
         stack.addWidget(card)
 
-        # ================= 卡四：手机扫码配对 =================
-        card, lay, _ = build_card("手机扫码配对")
-        lay.addWidget(setting_label(
-            "点主界面左下角的头像，弹出二维码；手机扫一下即可接入"
-            "（二维码 10 分钟内有效；里面带电脑的局域网 IP，"
-            "手机需与电脑同一网络）。"))
-        stack.addWidget(card)
-
-        # ================= 卡五：数据都在哪 =================
+        # ================= 卡四：数据都在哪 =================
         card, lay, _ = build_card("数据都在哪")
         for line in (
-            "设置与日志：本机 LOCALAPPDATA/Spore 目录"
-            "（ui_settings.json 里存着 API Key，请不要外传）。",
-            "截图缓存：同目录的 captures；题图：设置页里的「题库目录」"
-            "（默认 data/attachments）。",
+            "全部只存在本机 LOCALAPPDATA/Spore，不上传、不联网同步。",
+            "搜题记录与科目：spore.db（备份就复制这个文件）。",
+            "设置：ui_settings.json 里存着 API Key，请不要外传。",
+            "截图缓存：同目录的 captures。",
         ):
             lay.addWidget(setting_label(line))
         stack.addWidget(card)
 
-        # ================= 卡六：常见问题 =================
+        # ================= 卡五：常见问题 =================
         card, lay, _ = build_card("常见问题")
         for line in (
             "回答不出来？先到设置页看 API Key 是否「已设置」，再点「测试连接」。",
-            "界面一直空白？后端没起来：登录页会写明原因（客户端自己起后端、"
-            "不弹命令行窗口），完整报错在 logs\\backend-console.log。",
-            "截图不显示？题库目录被移动过就重新选一次（设置页「切换…」）。",
+            "记录不显示？截图后要等回答落库；数据库文件损坏时可在同目录回滚 spore.db.bak。",
             "检索没结果？网络受限时在设置页填本机代理，"
             "走 DDG→BING→BRAVE 检索链。",
         ):

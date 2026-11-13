@@ -1,7 +1,4 @@
-"""设置页：MV3 options.html 的卡片结构（模型 / 快捷键 / 题库目录）。
-
-扫码配对已迁出（2026-10-03）：设置页不再有二维码/手输 token，改为主窗
-左下角昵称头像点出二维码（见 pairing.py 与 main_window._qr_popup）。
+"""设置页：MV3 options.html 的卡片结构（模型 / 快捷键 / 数据）。
 
 卡片与字段样式照 options.html（白底、1px #e6e8f2、圆角 16、字段 label 11.5px
 muted、hint 12.5px、输入圆角 10 底 #fafbfe focus 边 #ec4899）。Qt 样式表不支持
@@ -24,7 +21,6 @@ import time
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -45,7 +41,7 @@ from qfluentwidgets import (
 from . import settings_store
 from .answer.llm import stream_chat
 from .answer.settings import LlmSettings
-from .api import ApiClient, ApiError, NetworkError
+from .store import Store
 
 # ---- 卡片/字段样式（options.html :44-97 同款） ----
 CARD_STYLE = (
@@ -205,10 +201,10 @@ class _ProbeTask(QThread):
 
 
 class SettingsPane(QWidget):
-    def __init__(self, api: ApiClient, llm: LlmSettings, parent=None):
+    def __init__(self, store: Store, llm: LlmSettings, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPage")  # FluentWindow.addSubInterface 要求非空
-        self.api = api
+        self.store = store
         self.llm = llm
         self._ready = False                # 回填门闩：回填期间的事件不许触发保存
         self._probe_task: _ProbeTask | None = None
@@ -364,25 +360,16 @@ class SettingsPane(QWidget):
             "全局热键随进程常驻；关窗收进托盘后仍可用，托盘右键退出才注销。"))
         stack.addWidget(card)
 
-        # ================= 卡四：题库目录 =================
-        card, lay, title = build_card("题库目录")
-        self.cards["dir"] = title
-        dir_row = QHBoxLayout()
-        self.dir_edit = LineEdit()
-        self.dir_edit.setObjectName("dirEdit")
-        self.dir_edit.setReadOnly(True)
-        self.dir_edit.setStyleSheet(INPUT_STYLE)
-        self.dir_btn = PushButton("切换…")
-        self.dir_btn.clicked.connect(self._switch_dir)
-        dir_row.addWidget(self.dir_edit, 1)
-        dir_row.addWidget(self.dir_btn)
-        lay.addLayout(dir_row)
-        self.dir_info = CaptionLabel("")
-        lay.addWidget(self.dir_info)
+        # ================= 卡四：数据 =================
+        card, lay, title = build_card("数据")
+        self.cards["data"] = title
+        lay.addWidget(hint_label(
+            "搜题记录、科目与设置都只存在本机（LOCALAPPDATA/Spore），"
+            "不上传、不联网同步。备份就复制该目录里的 spore.db。"))
         stack.addWidget(card)
         stack.addStretch(1)
 
-        # 操作状态（配对/目录/自动保存提示）—— 放滚动区外，始终可见
+        # 操作状态（自动保存提示）—— 放滚动区外，始终可见
         self.status = CaptionLabel("")
         root.addWidget(self.status)
 
@@ -499,37 +486,3 @@ class SettingsPane(QWidget):
             lambda msg, ok: self._set_probe_msg(
                 msg, "#0f9d58" if ok else "#d02747"))
         self._probe_task.start()
-
-    # ---------- 目录 ----------
-    def _switch_dir(self):
-        d = QFileDialog.getExistingDirectory(self, "选择题库目录")
-        if not d:
-            return
-        self._switch_to(d)
-
-    def _switch_to(self, d: str):
-        """切换 = 拷贝→校验→切配置→删旧（后端 StorageService 全做，客户端只发请求）。"""
-        self.status.setText("切换中…（拷贝→校验→切配置→删旧）")
-        try:
-            info = self.api.switch_storage(d)
-            data = info if isinstance(info, dict) else {}
-            # 后端 StorageServiceImpl.info/switchTo 的键是 path/fileCount/bytes
-            self.dir_edit.setText(str(data.get("path", d)))
-            self.dir_info.setText(
-                f"{data.get('fileCount', '?')} 个文件 ·"
-                f" {data.get('bytes', '?')} 字节")
-            self.status.setText("题库目录已切换")
-        except (ApiError, NetworkError) as e:
-            self.status.setText(f"切换失败：{e}")
-
-    def refresh(self):
-        """进入本页时拉一次目录现状（构造期不发网络请求）。"""
-        try:
-            info = self.api.storage_info()
-            # 旧代码读 dir/files 两个不存在的键 → 输入框恒空、统计恒 ?（反馈）
-            self.dir_edit.setText(str(info.get("path", "")))
-            self.dir_info.setText(
-                f"{info.get('fileCount', '?')} 个文件 ·"
-                f" {info.get('bytes', '?')} 字节")
-        except (ApiError, NetworkError):
-            self.status.setText("读取题库目录失败（后端未启动？）")

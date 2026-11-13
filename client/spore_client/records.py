@@ -16,13 +16,13 @@
 - `收藏` 分段平铺全部收藏会话、不摆科目（MV3 review.js:173-196）。
 
 **右栏 = 选中会话的内容区**：标题 + ★ 收藏 + 状态/时间小字 + 截图（点击用
-系统默认程序打开；attachmentPath 空时回退消息里的题图路径）+ markdown 消息流
+系统默认程序打开）+ markdown 消息流
 + 底部「接着问」输入行——追问收编给引擎、**回答在本页右栏直播**（200ms 节流，
 不开悬浮窗），落库更新本会话（turn-end 后本页自动刷新）；
 未选中时右侧居中提示，零记录给引导文案。
 
 纪律（MV3 design.md / 用户拍板）：
-- 一次 `articles(page=1, size=200)` 拉全量（后端 size 上限 200），分组/关键词/
+- 一次 `articles(page=1, size=200)` 拉最近 200 条，分组/关键词/
   收藏全在客户端过滤，**无分页 footer**（MV3 同样没有分页）。
 - 星标用字符 `★` + 自给 color，**绝不用 `⭐`**（系统 emoji 渲染色不可控）。
 - 行内按钮 hover 才显，点按钮不顺手打开会话（各自独立 widget，天然不冒泡）。
@@ -81,12 +81,12 @@ from qfluentwidgets import (
 )
 
 from .answer.session import Session, msgs_of
-from .api import ApiClient, ApiError, NetworkError
 from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
+from .store import Store, StoreError
 
-FETCH_SIZE = 200        # 后端 size 上限 200：一次拉全量，客户端分组/过滤
+FETCH_SIZE = 200        # 记录页一次拉最近 200 条（分组/检索在客户端做）
 
-# 后台完成、当时没在看的会话 id（客户端本地未读账；后端没有 unread 字段）。
+# 后台完成、当时没在看的会话 id（本地未读账；库里没有 unread 字段）。
 # 主窗 turn-end 落库后 RecordsPane.mark_unread()，点开即 discard ——
 # 记录页会话行与回答面板 💬 会话行共用这一份（MV3 unread 红点同语义）。
 UNREAD: set[str] = set()
@@ -149,32 +149,31 @@ class _QueryTask(QThread):
     ok = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, api: ApiClient, params: dict, parent=None):
+    def __init__(self, store: Store, params: dict, parent=None):
         super().__init__(parent)
-        self.api, self.params = api, params
+        self.store, self.params = store, params
 
     def run(self):
         try:
-            self.ok.emit(self.api.articles(**self.params))
-        except (ApiError, NetworkError) as e:
+            self.ok.emit(self.store.articles(**self.params))
+        except StoreError as e:
             self.failed.emit(str(e))
 
 
 class _CatTask(QThread):
-    """分类树后台取数——load_categories 从前是主线程同步请求，后端半死时
-    UI 卡 15s（用户「点进去狂点刷新都不显示」的嫌疑之一，2026-10-03）。"""
+    """分类树后台取数（本地库查询也放后台，保持界面线程零阻塞）。"""
 
     ok = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, api: ApiClient, parent=None):
+    def __init__(self, store: Store, parent=None):
         super().__init__(parent)
-        self.api = api
+        self.store = store
 
     def run(self):
         try:
-            self.ok.emit(_flatten(self.api.category_tree() or []))
-        except (ApiError, NetworkError) as e:
+            self.ok.emit(_flatten(self.store.category_tree() or []))
+        except StoreError as e:
             self.failed.emit(str(e))
 
 
@@ -617,8 +616,8 @@ class CatRow(QFrame):
 def _detail_html(art: dict) -> str:
     """content.messages → markdown HTML（不渲染 think；截图在右栏单独展示）。
 
-    列表 VO 直接带 `messages[]`（后端 toVo 直接带），详情接口包在 `content`
-    里（dict 或 JSON 字符串）——两种形状都吃。
+    本地库列表行直接带 `messages[]`；兼容老数据里 content 是 dict 或 JSON 串的
+    形状（迁移前的行）。
     """
     msgs = art.get("messages")
     if not isinstance(msgs, list):
@@ -709,40 +708,22 @@ def _detail_html(art: dict) -> str:
     return "".join(parts) or '<span style="color:#a3a8c2;">（空会话）</span>'
 
 
-def article_shot(article: dict, api: ApiClient) -> str:
-    """题图定位：attachmentPath 优先，落空回退最后一条带图消息的 imagePath。
+def article_shot(article: dict) -> str:
+    """题图定位：最后一条带图消息的 imagePath，且本机文件确实存在。
 
-    实测 push-attachment 只把文件存进题库目录、**没回写 article 行**
-    （SyncController 注释声称写回但代码没写）——GUI 建的会话 attachmentPath
-    恒空，光解析相对路径永远显示不出来（2026-10-03 用户复测「还是没有截图」）；
-    消息里的 imagePath 是绝对路径，resolve_attachment 直接认（§8-5 同链）。
+    2026-11-13 起没有「题库目录」这层了：题图就是截图缓存里的原文件，
+    库里存的是绝对路径；旧数据里指向 Android / 已删目录的路径一律当作没图。
     """
-    shot = api.resolve_attachment(str(article.get("attachmentPath") or ""))
-    if shot:
-        return shot
     for m in reversed(msgs_of(article)):
         if isinstance(m, dict) and m.get("imagePath"):
-            shot = api.resolve_attachment(str(m["imagePath"]))
-            if shot:
-                return shot
+            p = Path(str(m["imagePath"]))
+            if p.is_absolute() and p.is_file():
+                return str(p)
     return ""
 
 
-def purge_article_files(article: dict, api: ApiClient) -> None:
-    """删除会话后连带删题图（2026-10-03 反馈）。
-
-    删两类：题库目录里的附件 `<id>.*`（push-attachment 的落盘名）+ 本机
-    captures 里的原图（消息 imagePath 绝对路径）。**只碰这两个安全目录**，
-    消息里的野路径一律不动；同机部署（默认）即删即净。
-    """
-    art_id = str(article.get("id") or "")
-    if not art_id:
-        return
-    base = api.storage_dir()
-    if base:
-        for f in Path(base).glob(f"{art_id}.*"):
-            with suppress(OSError):
-                f.unlink()
+def purge_article_files(article: dict) -> None:
+    """删除会话后连带删题图：只删截图目录里的原文件，野路径一律不动。"""
     from .capture import CAPTURE_DIR  # 惰性 import：PIL 只在删除时才拉
     cap = Path(CAPTURE_DIR).resolve()
     for m in msgs_of(article):
@@ -750,7 +731,7 @@ def purge_article_files(article: dict, api: ApiClient) -> None:
             continue
         p = Path(str(m.get("imagePath") or ""))
         if not p.is_absolute():
-            continue  # 相对路径 = 题库目录，上面已按 id 删过
+            continue
         try:
             p.resolve().relative_to(cap)
         except ValueError:
@@ -808,10 +789,10 @@ class RecordsPane(QWidget):
     cancelRequested = Signal()             # 🚫 停止当前回合 → 主窗 engine.cancel
     verifyRequested = Signal(str)          # 「核实一下」锚点 → 主窗收编+核实
 
-    def __init__(self, api: ApiClient, parent=None):
+    def __init__(self, store: Store, parent=None):
         super().__init__(parent)
         self.setObjectName("recordsPage")  # FluentWindow.addSubInterface 要求非空
-        self.api = api
+        self.store = store
         self.keyword = ""
         self.fav = 0                      # 0=全部 1=只看收藏（分段）
         self.rows: list[dict] = []        # 一次拉全量（size=FETCH_SIZE）的原始列表
@@ -1107,19 +1088,16 @@ class RecordsPane(QWidget):
             return
         if self._current_row() is None:
             self.hint_lbl.setText("加载中…")
-        self._task = _QueryTask(self.api, {"page": 1, "size": FETCH_SIZE}, self)
+        self._task = _QueryTask(self.store, {"page": 1, "size": FETCH_SIZE}, self)
         self._task.ok.connect(self._on_rows)
         self._task.failed.connect(self._on_error)
         self._task.start()
 
     def load_categories(self):
-        """分类树数据（后台取；到达后重画，拿不到不阻断列表）。
-
-        从前是主线程同步请求——后端半死时 UI 卡 15s、点啥都没反应（§ 反馈）。
-        """
+        """分类树数据（后台取；到达后重画，拿不到不阻断列表）。"""
         if self._cat_task is not None and self._cat_task.isRunning():
             return
-        self._cat_task = _CatTask(self.api, self)
+        self._cat_task = _CatTask(self.store, self)
         self._cat_task.ok.connect(self._on_cats)
         self._cat_task.failed.connect(lambda _m: self._render_tree())  # 维持现状
         self._cat_task.start()
@@ -1293,10 +1271,9 @@ class RecordsPane(QWidget):
             f"{STATUS_LABEL.get(status, status)} · {_fmt_stamp(art.get('updateTime'))}")
         self._sync_star()
         # 截图：本地图等比缩放（最大高 320），点击用系统默认程序打开。
-        # attachmentPath 恒空时回退消息里的题图（push-attachment 不回写行）；
-        # 直播重渲（keep_shot）不动截图，别每 200ms 重解码一遍题图
+        # 路径来自消息里的 imagePath（本机截图缓存）；直播重渲（keep_shot）不动截图
         if not (keep_shot and not self._shot_pm.isNull()):
-            self._shot_path = article_shot(art, self.api)
+            self._shot_path = article_shot(art)
             self._shot_pm = (QPixmap(self._shot_path)
                              if self._shot_path else QPixmap())
             if self._shot_pm.isNull():
@@ -1673,9 +1650,9 @@ class RecordsPane(QWidget):
             if bool(r.get("fav")) == to_fav:
                 continue                      # 已是目标状态，别再翻
             try:
-                self.api.update_article(str(r.get("id")),
-                                        fav=1 if to_fav else 0)
-            except (ApiError, NetworkError) as e:
+                self.store.update_article(str(r.get("id")),
+                                          fav=1 if to_fav else 0)
+            except StoreError as e:
                 self._err(f"收藏失败：{e}")
                 continue
             r["fav"] = 1 if to_fav else 0
@@ -1709,8 +1686,8 @@ class RecordsPane(QWidget):
         n = 0
         for r in rows:
             try:
-                self.api.update_article(str(r.get("id")), category_id=target)
-            except (ApiError, NetworkError) as e:
+                self.store.update_article(str(r.get("id")), category_id=target)
+            except StoreError as e:
                 self._err(f"移动失败：{e}")
                 continue
             r["categoryId"] = target
@@ -1739,10 +1716,10 @@ class RecordsPane(QWidget):
         for r in rows:
             aid = str(r.get("id"))
             try:
-                self.api.delete_article(aid)
-                purge_article_files(r, self.api)   # 删会话连带删题图
+                self.store.delete_article(aid)
+                purge_article_files(r)   # 删会话连带删题图
                 done += 1
-            except (ApiError, NetworkError) as e:
+            except StoreError as e:
                 self._err(f"删除失败：{e}")
             UNREAD.discard(aid)
         self._set_selecting(False)            # 删空/删完都退多选（mobile 同款）
@@ -1757,9 +1734,9 @@ class RecordsPane(QWidget):
         if not new or new == title:
             return
         try:
-            self.api.update_article(art_id, title=new)
+            self.store.update_article(art_id, title=new)
             self.reload()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"重命名失败：{e}")
 
     def _delete_session(self, art_id: str, title: str):
@@ -1769,19 +1746,19 @@ class RecordsPane(QWidget):
         if not box.exec():
             return
         try:
-            self.api.delete_article(art_id)
+            self.store.delete_article(art_id)
             row = next((r for r in self.rows
                         if str(r.get("id")) == art_id), None)
             if row is not None:
-                purge_article_files(row, self.api)  # 删会话连带删题图
+                purge_article_files(row)  # 删会话连带删题图
             self.reload()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"删除失败：{e}")
 
     def _toggle_fav(self, art_id: str, cur: bool):
         try:
-            self.api.update_article(art_id, fav=0 if cur else 1)
-        except (ApiError, NetworkError) as e:
+            self.store.update_article(art_id, fav=0 if cur else 1)
+        except StoreError as e:
             self._err(f"收藏失败：{e}")
             return
         # 乐观更新 + toast（MV3 review.js:261-268）；收藏不重排
@@ -1815,12 +1792,12 @@ class RecordsPane(QWidget):
     def _move(self, art_id: str, cat_id: str):
         try:
             if cat_id:
-                self.api.update_article(art_id, category_id=cat_id)
+                self.store.update_article(art_id, category_id=cat_id)
             else:
-                self.api.update_article(art_id, category_id="")
+                self.store.update_article(art_id, category_id="")
             self.load_categories()   # 分组变了：科目树 + 列表都重画
             self.reload()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"移动失败：{e}")
 
     # ---------- 分类：新建 / 重命名 / 启停 / 删除 ----------
@@ -1829,9 +1806,9 @@ class RecordsPane(QWidget):
         if not name:
             return
         try:
-            self.api.create_category(name)
+            self.store.create_category(name)
             self.load_categories()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"新建失败：{e}")
 
     def _rename_category(self, cat_id: str, name: str):
@@ -1839,9 +1816,9 @@ class RecordsPane(QWidget):
         if not new or new == name:
             return
         try:
-            self.api.rename_category(cat_id, new)
+            self.store.rename_category(cat_id, new)
             self.load_categories()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"改名失败：{e}")
 
     def _delete_category(self, cat_id: str, name: str):
@@ -1851,11 +1828,11 @@ class RecordsPane(QWidget):
         if not box.exec():
             return
         try:
-            self.api.delete_category(cat_id)
+            self.store.delete_category(cat_id)
             self._expanded.discard(cat_id)
             self.load_categories()
             self.reload()
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self._err(f"删除失败：{e}")
 
 def _flatten(nodes: list[dict], depth: int = 0) -> list[dict]:

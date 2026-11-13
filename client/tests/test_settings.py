@@ -1,48 +1,26 @@
 """设置页行为（2026-10-03 反馈回归）。
 
-- 题库目录：refresh/切换后按后端真实键 path/fileCount/bytes 回填
-  （旧代码读 dir/files 两个不存在的键 → 输入框恒空、统计恒 ?）；
 - 滚轮不改数值：焦点还在输入框时滚动页面不许顺手改数字。
 """
 
+import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 
 from spore_client.answer.settings import LlmSettings
 from spore_client.settings import SettingsPane, _NoWheelSpinBox
+from spore_client.store import Store
 
 
-class _StorageApi:
-    """只给设置页目录区用的假后端（键形状 = StorageServiceImpl.info/switchTo）。"""
-
-    def __init__(self):
-        self.returned = {"path": "D:/题库", "fileCount": 7, "bytes": 12345}
-
-    def storage_info(self):
-        return dict(self.returned)
-
-    def switch_storage(self, path):
-        self.returned = {"path": path, "fileCount": 2, "bytes": 9}
-        return dict(self.returned)
+@pytest.fixture()
+def store(tmp_path):
+    s = Store(tmp_path / "spore.db")
+    yield s
+    s.close()
 
 
-def _pane(api, llm: LlmSettings | None = None) -> SettingsPane:
-    return SettingsPane(api, llm or LlmSettings(api_key="sk-test"))
-
-
-def test_storage_refresh_fills_dir_and_stats(qapp):
-    pane = _pane(_StorageApi())
-    pane.refresh()
-    assert pane.dir_edit.text() == "D:/题库"
-    assert pane.dir_info.text() == "7 个文件 · 12345 字节"
-
-
-def test_storage_switch_updates_stats_immediately(qapp):
-    api = _StorageApi()
-    pane = _pane(api)
-    pane._switch_to("E:/新库")
-    assert pane.dir_edit.text() == "E:/新库"          # 输入框跟着切
-    assert pane.dir_info.text() == "2 个文件 · 9 字节"  # 底部统计当场刷新
+def _pane(store: Store, llm: LlmSettings | None = None) -> SettingsPane:
+    return SettingsPane(store, llm or LlmSettings(api_key="sk-test"))
 
 
 def _wheel_event() -> QWheelEvent:
@@ -71,8 +49,8 @@ def test_plain_spinbox_still_reacts_to_wheel(qapp):
 
 # ---------- API key 输入框（2026-10-03 拍板：只依赖 config，不回显） ----------
 
-def test_key_input_saves_without_echoing(qapp):
-    pane = _pane(_StorageApi(), LlmSettings())      # 起点：没设过 key
+def test_key_input_saves_without_echoing(qapp, store):
+    pane = _pane(store, LlmSettings())              # 起点：没设过 key
     assert pane.key_edit.text() == ""                 # 永不回显旧值
     assert pane.key_edit.placeholderText() == "未设置 ✗（粘贴 API key 后回车保存）"
     pane.key_edit.setText("  sk-new  ")
@@ -86,25 +64,25 @@ def test_key_input_saves_without_echoing(qapp):
 
 # ---------- 回答面板位置固定开关（2026-10-05 用户点名：默认开） ----------
 
-def test_panel_fixed_switch_defaults_on_and_persists(qapp, tmp_path, monkeypatch):
+def test_panel_fixed_switch_defaults_on_and_persists(qapp, store, tmp_path, monkeypatch):
     from spore_client import settings_store
 
     monkeypatch.setattr(settings_store, "PATH", tmp_path / "ui.json")
-    pane = _pane(_StorageApi())
+    pane = _pane(store)
     assert pane.panel_switch.isChecked()             # 键缺失 = 默认开
 
     pane.panel_switch.setChecked(False)              # 关 → 当场落盘
     assert settings_store.read().get("panelFixed") is False
 
-    again = _pane(_StorageApi())                     # 新实例回填读回
+    again = _pane(store)                             # 新实例回填读回
     assert not again.panel_switch.isChecked()
 
 
-def test_save_key_clears_startup_key_error_and_hint(qapp):
+def test_save_key_clears_startup_key_error_and_hint(qapp, store):
     # 2026-10-03 用户实测：设完 API key，底部红字「API key 未设置」留到重启不消
     llm = LlmSettings(api_key="")
     llm.errors.append("API key 未设置——到设置页粘贴后回车保存即生效")
-    pane = _pane(_StorageApi(), llm)
+    pane = _pane(store, llm)
     assert pane.llm.errors, "预设：启动错误先在场"
     assert pane._err_hint is not None, "预设：红字标签已建并被引用"
 

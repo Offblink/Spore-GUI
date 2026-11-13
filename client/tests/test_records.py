@@ -15,7 +15,6 @@
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 
-from spore_client.api import ApiClient
 from spore_client.records import (
     CatRow,
     RecordsPane,
@@ -28,8 +27,8 @@ from spore_client.records import (
 SIDEBAR_ROW = 254   # 280 侧栏 − 树区左右边距
 
 
-class _FakeApi:
-    """记录页 ctor 开机自载：假 api 返回空表，两个后台取数不碰真后端。"""
+class _FakeStore:
+    """记录页 ctor 开机自载：假 store 返回空表，两个后台取数不碰真库。"""
 
     def __init__(self):
         self.article_calls = 0
@@ -43,16 +42,12 @@ class _FakeApi:
         self.cat_calls += 1
         return []
 
-    def resolve_attachment(self, raw):
-        from pathlib import Path
-        return str(Path(raw)) if raw and Path(raw).is_file() else ""
-
 
 def _pane(qapp) -> RecordsPane:
     """构造记录页并等开机自载落定（跨线程信号队列化，wait 后还要泵事件）。"""
-    api = _FakeApi()
-    pane = RecordsPane(api)
-    pane._fake_api = api
+    store = _FakeStore()
+    pane = RecordsPane(store)
+    pane._fake_store = store
     for task in (pane._task, pane._cat_task):
         if task is not None:
             task.wait(3000)
@@ -157,8 +152,8 @@ def test_followup_input_emits_current_session(qapp):
 
 def test_startup_autoload_and_default_segment(qapp):
     pane = _pane(qapp)
-    assert pane._fake_api.article_calls >= 1   # 开机即自动拉会话列表
-    assert pane._fake_api.cat_calls >= 1       # 开机即自动拉分类树
+    assert pane._fake_store.article_calls >= 1   # 开机即自动拉会话列表
+    assert pane._fake_store.cat_calls >= 1       # 开机即自动拉分类树
     assert "#ffffff" in pane.seg_all.styleSheet()    # 初始选中「全部」
     assert "#ffffff" not in pane.seg_fav.styleSheet()
     assert pane.search.searchButton.isHidden()       # 搜索按钮已去掉
@@ -179,23 +174,21 @@ def test_keyword_enters_flat_second_form(qapp):
     assert kinds.count("SessionCard") == 1    # 只剩命中那条
 
 
-# ---------- 题图：attachmentPath 恒空时回退消息 imagePath ----------
+# ---------- 题图：只认本机真存在的绝对路径 ----------
 
-def test_article_shot_falls_back_to_message_image(tmp_path):
-    img = tmp_path / "stored.jpg"
-    img.write_bytes(b"a")
+def test_article_shot_uses_existing_local_image(tmp_path):
     msg_img = tmp_path / "msg.jpg"
     msg_img.write_bytes(b"b")
-    api = ApiClient()   # 绝对路径解析不联网
-    # push-attachment 不回写 article 行 → attachmentPath 空，从最后带图消息找
-    art = {"attachmentPath": "", "messages": [
+    art = {"messages": [
         {"role": "user", "kind": "answer", "hasImage": True,
          "imagePath": str(msg_img)},
         {"role": "assistant", "kind": "answer", "ans": "A"}]}
-    assert article_shot(art, api) == str(msg_img)
-    art["attachmentPath"] = str(img)
-    assert article_shot(art, api) == str(img)     # attachmentPath 优先
-    assert article_shot({"attachmentPath": "", "messages": []}, api) == ""
+    assert article_shot(art) == str(msg_img)
+    # 手机路径 / 已删目录 → 当作没图
+    art2 = {"messages": [{"role": "user", "hasImage": True,
+                          "imagePath": "/data/user/0/x/cap.jpg"}]}
+    assert article_shot(art2) == ""
+    assert article_shot({"messages": []}) == ""
 
 
 # ---------- 协议标记转义（「ok」不许被富文本当标签吃掉） ----------
@@ -253,24 +246,22 @@ def test_cancel_button_emits_signal(qapp):
 
 # ---------- 删除会话连带删题图（2026-10-03 反馈） ----------
 
-def test_purge_deletes_storage_photo_and_spares_foreign_paths(tmp_path):
+def test_purge_deletes_capture_photo_and_spares_foreign_paths(tmp_path, monkeypatch):
     from spore_client.records import purge_article_files
 
-    store = tmp_path / "store"
-    store.mkdir()
-    photo = store / "art-1.jpg"
+    cap = tmp_path / "captures"
+    cap.mkdir()
+    photo = cap / "cap-1.jpg"
     photo.write_bytes(b"x")
     foreign = tmp_path / "foreign.jpg"
     foreign.write_bytes(b"y")
+    monkeypatch.setattr("spore_client.capture.CAPTURE_DIR", cap)
 
-    class _Api:
-        def storage_dir(self):
-            return str(store)
-
-    art = {"id": "art-1",
-           "messages": [{"role": "user", "imagePath": str(foreign)}]}
-    purge_article_files(art, _Api())
-    assert not photo.exists()        # 题库附件 <id>.* 已删
+    art = {"id": "art-1", "messages": [
+        {"role": "user", "imagePath": str(photo)},
+        {"role": "user", "imagePath": str(foreign)}]}
+    purge_article_files(art)
+    assert not photo.exists()        # 截图目录里的原图已删
     assert foreign.exists()          # 截图目录之外的路径绝不碰（防野路径）
 
 
@@ -401,7 +392,7 @@ def test_select_all_only_covers_filtered_rows(qapp):
 def test_batch_fav_flips_selected_rows(qapp):
     pane = _multi_pane(qapp)
     calls: list = []
-    pane.api.update_article = lambda aid, **kw: calls.append((aid, kw))
+    pane.store.update_article = lambda aid, **kw: calls.append((aid, kw))
     pane._set_selecting(True)
     pane._set_checked(pane._session_cards[0], True)
     pane._set_checked(pane._session_cards[2], True)
@@ -431,7 +422,7 @@ def test_batch_move_exits_select_mode(qapp, monkeypatch):
     moved: list[str] = []
     monkeypatch.setattr(_MoveDialog, "get_target",
                         staticmethod(lambda *a, **k: "c1"))
-    monkeypatch.setattr(pane.api, "update_article",
+    monkeypatch.setattr(pane.store, "update_article",
                         lambda aid, **kw: moved.append(aid) or {},
                         raising=False)
     pane._batch_move()
@@ -448,7 +439,7 @@ def test_batch_move_exits_select_mode(qapp, monkeypatch):
 def test_batch_delete_confirms_count_and_exits_mode(qapp, monkeypatch):
     pane = _multi_pane(qapp)
     deleted: list = []
-    pane.api.delete_article = lambda aid: deleted.append(aid)
+    pane.store.delete_article = lambda aid: deleted.append(aid)
     seen: dict = {}
 
     class _OkBox:
@@ -461,7 +452,7 @@ def test_batch_delete_confirms_count_and_exits_mode(qapp, monkeypatch):
 
     monkeypatch.setattr("spore_client.records.MessageBox", _OkBox)
     monkeypatch.setattr("spore_client.records.purge_article_files",
-                        lambda art, api: None)
+                        lambda art: None)
     pane._set_selecting(True)
     pane._set_checked(pane._session_cards[0], True)
     pane._set_checked(pane._session_cards[1], True)

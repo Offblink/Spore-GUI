@@ -1,66 +1,30 @@
-Spore v{VERSION} —— 截图搜题桌面应用（Windows 客户端 + 后端一体包）
-================================================================
+Spore v{VERSION} —— 截图搜题桌面应用（单机版）
+================================================
 
 【包里有什么】
-  Spore.exe                       客户端（截图作答 / 搜题记录 / 设置 / 帮助）
-                                  双击它即可：后端随客户端自动启动，不弹命令行窗口
-  _internal\                      程序依赖目录——Spore.exe 靠它运行，别删
-  spore-backend-{VERSION}.war         后端（严格 SSM：Spring+SpringMVC+MyBatis，REST + MySQL）
-                                  ——请与 Spore.exe 同目录
-  tomcat\                         自带 Tomcat 9（后端的运行容器；客户端首启会自动
-                                  配好它并把后端部署上去，不用你动）
-  schema.sql                      手动重建参考（先删表再建表，重跑清空数据；日常用不着）
-  db.properties.example           数据库口令模板（复制改名后填写）
-  本说明
+  Spore.exe        主程序（截图作答 / 搜题记录 / 设置 / 帮助）
+  _internal\       程序依赖目录——Spore.exe 靠它运行，别删
+  README.txt       本说明
 
 【注意】
   别把 Spore.exe 单独挪出文件夹——它依赖同目录的 _internal\，单独挪走会报错跑不起来；
   要移动或复制就整个文件夹一起搬。
 
-【前置要件】
-  1) JDK 8（推荐；本机若只有其它 Java 8+ 版本，会自动改用 PATH 上的 java）
-  2) MySQL（本机 3306）
-
-【首次准备（只做一次）】
-  只要 MySQL 装好并在本机跑着即可——不用手动建库、不用导入 SQL。
-  首次启动时 Spore 会自动建库 spore_cms、建出 7 张表并配好角色/权限，
-  全程幂等、不会动到你已有的数据。只需告诉 Spore 一个有建库权限的 MySQL 账号：
-     · 界面填（推荐）：直接双击 Spore.exe。若连不上数据库会自动弹出「数据库配置」页，
-       填账号/密码 → 点「保存并重启后端」即可，Spore 自己建库建表并写配置。
-       （地址/端口/库名已按默认值 localhost:3306/spore_cms 预填，收在「高级设置」里，
-         只有改过端口或库名的装机才需要点开。）
-     · 手动配：把 db.properties.example 复制为 db.properties（同目录），
-       把 username / password 改成你的 MySQL 账号口令，再双击 Spore.exe。
-     —— 口令只存在你本机这个文件里，请勿外传、勿上传、不进 git、不随包分发。
-     —— 账号需要有建库权限（root 即可）；能连但无建库权限会提示「自动建库失败」。
-
-  附带的 schema.sql 只是「手动重建参考」（先删表再建表，重跑会清空数据），
-  日常装机与升级都用不着它。
+【数据与隐私】
+  所有数据只存在本机，不需要服务器、数据库或账号：
+    %LOCALAPPDATA%\Spore\spore.db          搜题记录与科目（唯一数据文件）
+    %LOCALAPPDATA%\Spore\ui_settings.json  设置（含大模型 API Key，勿外传）
+    %LOCALAPPDATA%\Spore\captures\         截图缓存
+    %LOCALAPPDATA%\Spore\logs\             运行日志
+  备份：退出程序后复制 spore.db 即可；恢复时覆盖回去。
 
 【启动】
-  双击 Spore.exe：
-    · 后端没在跑 → 客户端自己把它拉起来（不弹命令行窗口，首次约 6 秒，有进度提示）
-    · 后端已在跑 → 直接复用，不重复起、也不接管
-    · 关掉客户端 = 关掉它自己拉起的那个后端（你自己起的后端它不动）
-  客户端首次打开是登录页，输入账号密码（登录成功后本机会记住，之后免登录）；
+  双击 Spore.exe 直接进主界面（无登录）。
   进「设置」页粘贴大模型 API Key（回车保存）→ 点「测试连接」确认能通。
   之后在任意界面按 Alt+S 框选题目即可搜题；Alt+Z 呼出/收起回答浮窗。
   注意：关窗口只是收进托盘（热键还在），要真正退出请在托盘图标上右键 → 退出。
 
 【排障】
   答完不出结果      → 设置页检查 API Key / 测试连接
-  启动时弹「数据库配置」页
-                    → 连不上 MySQL / 建不了库：在页里改对账号密码并点「保存并重启后端」；
-                      或确认 MySQL 服务已启动
-                      （库/表由 Spore 自动建；账号需要建库权限，root 即可。
-                        地址/端口/库名不对时，点开「高级设置」再改）
-  启动时弹「后端启动失败」
-                    → 看弹窗里的后端控制台尾部；全文在
-                      %LOCALAPPDATA%\Spore\logs\backend-console.log
-                      （装进 Program Files 这类不可写的目录必然落这儿；
-                        目录自己可写时才用 exe 旁的 logs\）
-                      常见原因：缺 JDK、Spore.exe 不在 war 同目录、tomcat\ 目录缺失
-  界面一片空白      → 后端没起来：看上面那个 logs\ 目录里的
-                      spore-gui.log / backend-console.log
-  题目截图不显示    → 设置页「题库目录」被移动过，重新选一次
-  登录失败          → 确认 schema.sql 已导入、db.properties 口令正确
+  记录不见了        → 确认 spore.db 还在原目录；损坏时可用同目录的 spore.db.bak 回滚
+  启动即报数据库错误 → 看 %LOCALAPPDATA%\Spore\logs\client.log

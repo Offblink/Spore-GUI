@@ -1,24 +1,24 @@
-"""Spore 客户端入口：单例（第二实例唤醒首实例后退出）→ 起后端 → 登录窗口 → 主窗口。"""
+"""Spore 客户端入口：单例（第二实例唤醒首实例后退出）→ 打开本机数据库 → 主窗口。
+
+2026-11-13 起不再有后端进程、账号与同步：数据在 ``%LOCALAPPDATA%\\Spore\\spore.db``，
+由 :class:`spore_client.store.Store` 直接读写。
+"""
 
 import ctypes
 import os
 import sys
 import threading
-import time
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from . import __version__
-from .api import ApiClient
 from .app_icon import app_icon
-from .backend import BackendError, EmbeddedBackend
-from .db_config import DbConfigWindow, looks_like_db_failure
 from .instance_lock import acquire_instance_lock
 from .log import get_logger
-from .login import LoginWindow, try_device_login
 from .main_window import MainWindow
+from .store import Store
 
 LOG = get_logger()
 
@@ -53,98 +53,16 @@ def _on_wake(server: QLocalServer, app: QApplication) -> None:
     conn = server.nextPendingConnection()
     if conn is not None:
         conn.close()  # 载荷不读：连上本身就是「唤醒」
-    target = (getattr(app, "_main", None) or getattr(app, "_login", None)
-              or getattr(app, "_db_config", None))
+    target = getattr(app, "_main", None)
     LOG.info("wake received: target=%s",
              type(target).__name__ if target is not None else "none-yet")
     if target is None:
-        return  # 首实例窗口还没建好——它马上就会自己 show
+        return  # 窗口还没建好——它马上就会自己 show
     if target.isMinimized():  # 最小化也要还原，光 show/raise 不够
         target.setWindowState(target.windowState() & ~Qt.WindowMinimized)
     target.show()
     target.raise_()
     target.activateWindow()
-
-
-BACKEND_START_TIMEOUT = 90.0  # 外部 Tomcat 冷启动实测约 40s（首次展 war）/ 30s（之后）
-
-
-def _wait_backend(backend: EmbeddedBackend,
-                  timeout: float = BACKEND_START_TIMEOUT) -> bool:
-    """边泵 Qt 事件边等应用就绪（端口 + 探活），返回是否就绪。
-
-    直接阻塞 = 「双击了没反应」；给个进度小窗，界面照常响应。
-    """
-    from qfluentwidgets import IndeterminateProgressBar, StrongBodyLabel
-
-    win = QWidget(None, Qt.Window)
-    win.setWindowTitle("Spore")
-    win.setWindowIcon(app_icon())
-    box = QVBoxLayout(win)
-    box.setContentsMargins(30, 26, 30, 24)
-    box.setSpacing(16)
-    box.addWidget(StrongBodyLabel("正在启动后端服务…"))
-    box.addWidget(IndeterminateProgressBar(win, start=True))
-    win.resize(360, 118)
-    win.show()
-    win.raise_()
-    win.activateWindow()
-
-    loop = QEventLoop()
-    state = {"ok": False}
-    deadline = time.monotonic() + timeout
-
-    def tick():
-        if backend.ready():
-            state["ok"] = True
-            loop.quit()
-        elif not backend.alive or time.monotonic() >= deadline:
-            loop.quit()  # 进程秒退 / 等满超时 → 调用方报错
-
-    timer = QTimer(win)
-    timer.setInterval(200)
-    timer.timeout.connect(tick)
-    timer.start()
-    tick()  # 理论上刚起进程不会就绪，但别为必然的等待赌一把
-    if not state["ok"]:
-        loop.exec()
-    timer.stop()
-    win.close()
-    return state["ok"]
-
-
-def _ensure_backend(app: QApplication) -> str | None:
-    """起后端（或确认外部后端在跑）。返回 None = 就绪；否则是给登录页看的一句话原因。
-
-    起不来**不弹框、不退出**——照样进登录窗，把原因写进状态栏：构建自检时
-    `Spore.exe` 旁边没有 jar 也得能打开看说明（原因进红字状态栏），而不是弹个红叉
-    就自杀（2026-10-03 打包自检实测：dist 里没 jar，弹框 + 退出直接让构建断言失败）。
-    """
-    backend = EmbeddedBackend()
-    app._backend = backend  # noqa: SLF001 — 防 GC
-    app.aboutToQuit.connect(backend.stop)  # 关客户端 = 停自己起的那个后端
-    try:
-        spawned = backend.start_if_needed()
-    except (BackendError, OSError) as e:
-        # OSError 也接：后端起不来的任何系统级失败（如权限）都进登录页状态栏，
-        # **绝不 uncaught 弹红叉就退出**——1.1.0 装进 Program Files 的启动即崩就是
-        # spawn_hidden 的 PermissionError 漏到这层之外（2026-10-03 用户实测「打不开」）
-        LOG.error("backend start refused: %s", e)
-        return str(e)
-    if not spawned:
-        return None  # 外部后端已在 8080：只用不接管（退出时也不去收它）
-    if _wait_backend(backend):
-        LOG.info("backend ready at %s:%s", backend.host, backend.port)
-        return None
-    if backend.alive:
-        reason = (f"后端 {BACKEND_START_TIMEOUT:.0f} 秒内没有就绪 "
-                  f"（{backend.host}:{backend.port}，详见 logs\\backend-console.log）")
-        backend.stop()  # 卡在半路的进程别留成孤儿
-    else:
-        reason = "后端进程启动后立刻退出了（详见 logs\\backend-console.log）"
-    LOG.error("backend failed: %s | tail: %s", reason,
-              backend.tail_console().replace("\n", " | "))
-    return reason
 
 
 def main() -> int:
@@ -155,15 +73,13 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Spore")
     app.setWindowIcon(app_icon())  # = MV3 扩展图标（用户 2026-10-02 拍板）
-    # MV3 品牌粉 + 浅色（design-brief §0）：MV3 options/review/drawer 均为纯浅色
-    # 设计，强制浅色避免深色导航配白卡的错配
+    # MV3 品牌粉 + 浅色（design-brief §0）
     from qfluentwidgets import Theme, setTheme, setThemeColor
     setThemeColor("#ec4899")
     setTheme(Theme.LIGHT)
     _install_excepthooks()
 
-    # ---- 单例：内核互斥体才是判据（QLocalServer 同名 listen 本机不冲突，实测双开都「owned」）；
-    #      管子降级成唤醒通道：只有首实例 listen，第二实例连上来发 wake 就退 ----
+    # ---- 单例：内核互斥体才是判据；管子降级成唤醒通道 ----
     lock = acquire_instance_lock()
     if lock is None:
         LOG.info("instance started: pipe held by existing instance → wake + exit")
@@ -173,59 +89,32 @@ def main() -> int:
     server = QLocalServer()
     server.newConnection.connect(lambda: _on_wake(server, app))
     if not server.listen(INSTANCE_NAME):
-        # 单例不受影响（锁在手），只是唤醒通道废了：第二实例会退但叫不醒首实例
+        # 单例不受影响（锁在手），只是唤醒通道废了
         LOG.error("instance pipe listen failed: %s", server.errorString())
     app._instance_server = server  # noqa: SLF001 — 防 GC
     LOG.info("instance started: pipe owned")
 
-    api = ApiClient()
-    app._api = api  # noqa: SLF001 — 防 GC
+    # ---- 本机数据库：打不开就没法用，明确告知而不是静默空白 ----
+    try:
+        store = Store()
+    except Exception as e:  # noqa: BLE001 — 损坏/权限/占用都要给人话
+        LOG.error("store open failed: %s", e)
+        QMessageBox.critical(
+            None, "Spore",
+            f"数据库打不开，Spore 无法启动。\n\n{store_path_hint()}\n\n{e}")
+        return 1
+    app._store = store  # noqa: SLF001 — 防 GC
 
-    # ---- 后端：随客户端起（无命令行窗口），退出随客户端停 ----
-    problem = _ensure_backend(app)
-
-    def enter_main(vo: dict):
-        win = MainWindow(api)
-        win.show()
-        app._main = win  # noqa: SLF001
-        if app._login is not None:
-            app._login.close()
-        LOG.info("entered main window (login ok)")
-
-    def enter_login(note: str | None):
-        """建登录页（note=后端没起来的一句话原因，写进红字状态栏）。"""
-        win = LoginWindow(api, startup_note=note)
-        win.loginSucceeded.connect(enter_main)
-        app._login = win  # noqa: SLF001 — 单例唤醒要用
-        win.show()
-        LOG.info("showing login window (%s)",
-                 "backend unavailable" if note else "no valid device token")
-
-    # 静默登录优先（device.token 在 → 直接进主窗）；后端不通就别白等 15 秒超时
-    me = try_device_login(api) if problem is None else None
-    if me is not None:
-        win = MainWindow(api)
-        win.show()
-        app._main = win  # noqa: SLF001
-        LOG.info("entered main window (silent login)")
-        return app.exec()
-
-    # 后端因数据库连不上而起不来 → 先弹配置页（让用户填口令、客户端写 yml + 重启），
-    # 配好/跳过再进登录页。这页不能塞进登录页：口令错时后端根本起不来，登录页不存在。
-    # 判定读 console_text()（全文）而非 tail_console()：Spring 秒退时堆栈几十帧，
-    # 最后 12 行全是纯堆栈帧，Access denied/pool initialization 特征串会被切掉。
-    if problem is not None and looks_like_db_failure(
-            app._backend.console_text()):
-        cfg = DbConfigWindow(app._backend, note=problem)
-        cfg.configured.connect(lambda: enter_login(None))  # 后端起来了：干净登录页
-        cfg.skipped.connect(lambda: enter_login(problem))  # 跳过：带原因进登录页
-        app._db_config = cfg  # noqa: SLF001 — 防 GC + 单例唤醒要用
-        cfg.show()
-        LOG.info("showing db config window (backend db failure)")
-        return app.exec()
-
-    enter_login(problem)
+    win = MainWindow(store)
+    win.show()
+    app._main = win  # noqa: SLF001
+    LOG.info("entered main window")
     return app.exec()
+
+
+def store_path_hint() -> str:
+    from .store import DEFAULT_DB
+    return f"数据库位置：{DEFAULT_DB}"
 
 
 if __name__ == "__main__":

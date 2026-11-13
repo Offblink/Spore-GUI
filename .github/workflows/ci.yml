@@ -6,8 +6,8 @@ on:
   pull_request:
 
 jobs:
-  # 客户端（PySide6）测试必须在 Windows：backend/instance_lock 模块顶层就绑
-  # ctypes.WinDLL("kernel32")，Linux 上 import 即炸；conftest 自带 offscreen QPA。
+  # 单进程 PySide6 应用：CI 必须在 Windows（instance_lock 模块顶层绑定 kernel32）。
+  # conftest 自带 offscreen QPA，不需要桌面会话。
   client-tests:
     runs-on: windows-latest
     steps:
@@ -23,7 +23,7 @@ jobs:
         run: >-
           python -m pip install
           "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3"
-          httpx markdown qrcode Pillow keyboard pytest ruff matplotlib
+          httpx markdown Pillow keyboard pytest ruff
 
       # pyproject 已配 ruff 规则集（E/F/I/UP/B/SIM）——进 CI 当门禁
       - name: Lint (ruff)
@@ -33,19 +33,3 @@ jobs:
       - name: Run tests
         working-directory: client
         run: python -m pytest tests
-
-  # 后端（严格 SSM 的 war / source 8）：JDK 17 可编；仓库无后端测试，包出即绿。
-  backend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-
-      - name: Build backend war
-        run: mvn -B package

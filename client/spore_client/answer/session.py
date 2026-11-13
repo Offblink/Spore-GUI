@@ -1,7 +1,7 @@
 """会话/消息模型——字段与 design/03 映射表、手机端 Session.Msg 同构。
 
-落库时 Msg 直接序列化进 article.content.messages（后端 Msg.java 同名字段），
- imagePath/hasImage 指到题图，题图本体走 /sync/push-attachment 上推。
+落库时 Msg 直接序列化进 article.content.messages（本地 SQLite，字段名沿用旧接口）；
+imagePath/hasImage 指到本机截图文件。
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class Msg:
     verifyNote: str = ""
     verifyThink: str = ""
     hasImage: bool = False
-    imagePath: str = ""             # 题图相对路径（题库目录内）
+    imagePath: str = ""             # 题图绝对路径（本机截图缓存）
     verifyRan: bool = False
     verifySkipped: bool = False
     verifyPending: bool = False
@@ -63,9 +63,9 @@ class Session:
     title: str = "新会话"
     status: str = ""                # answering/verifying/searching/done/error/aborted
     messages: list[Msg] = field(default_factory=list)
-    image_path: str = ""            # 本回合题图（GUI 本地路径，turn-end 时上推）
-    backend_id: str = ""            # 后端 article id：历史接续时带上，turn-end 据此
-                                    # PUT 更新而不是 POST 开新会话（§8-2）
+    image_path: str = ""            # 本回合题图（GUI 本地路径，随消息落库）
+    backend_id: str = ""            # 本地库 article id：历史接续时带上，turn-end 据此
+                                    # 更新而不是开新会话（§8-2）
 
     @property
     def last_user(self) -> Msg | None:
@@ -86,7 +86,7 @@ class Session:
 
 
 def msgs_of(article: dict) -> list:
-    """ArticleVO.messages（后端 toVo 顶层直带）；兼容详情 content.messages/JSON 串。"""
+    """本地库返回的 messages[]；兼容 content.messages 的 JSON 串老形状。"""
     msgs = article.get("messages")
     if isinstance(msgs, list):
         return msgs

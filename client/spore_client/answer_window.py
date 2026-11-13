@@ -63,13 +63,13 @@ from qfluentwidgets import (
 from .answer.engine import AgentEngine
 from .answer.session import Session, msgs_of, session_from_article
 from .answer.settings import LlmSettings
-from .api import ApiError, NetworkError
 from .capture import CAPTURE_DIR, encode_jpeg
 from .latex_render import extract_math, placeholder_remote_images, restore_math, style_tables
 from .log import get_logger
 from .records import UNREAD, _InputDialog, article_shot, purge_article_files
 from .settings_store import read as read_ui_settings
 from .settings_store import write as write_ui_settings
+from .store import Store, StoreError
 
 LOG = get_logger()
 
@@ -246,20 +246,19 @@ class _SessionsTask(QThread):
     ok = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, api, parent=None):
+    def __init__(self, store: Store, parent=None):
         super().__init__(parent)
-        self.api = api
+        self.store = store
 
     def run(self):
-        # 全量翻页（2026-10-05 用户点名「不要限制」）：旧实现 page=1/size=60
-        # 只拿前 60 条。按 200/页（后端 size 上限）翻到短页为止；
-        # id 集重复 = 后端没分页，立刻收手，别在坏后端上无限翻。
+        # 全量翻页（2026-10-05 用户点名「不要限制」）：按 200/页翻到短页为止；
+        # id 集重复 = 分页失效，立刻收手，别无限翻。
         try:
             rows: list = []
             seen: set[str] = set()
             page = 1
             while True:
-                data = self.api.articles(page=page, size=200)
+                data = self.store.articles(page=page, size=200)
                 batch = data.get("list", []) if isinstance(data, dict) else []
                 ids = {str(r.get("id") or f"{page}-{i}")
                        for i, r in enumerate(batch)}
@@ -271,7 +270,7 @@ class _SessionsTask(QThread):
                     break
                 page += 1
             self.ok.emit(rows)
-        except (ApiError, NetworkError) as e:
+        except StoreError as e:
             self.failed.emit(str(e))
 
 
@@ -385,7 +384,7 @@ class AnswerWindow(QWidget):
         self.setAcceptDrops(True)          # 拖入图片 URL 读取（2026-10-05）
         self._img_task: _FetchImageTask | None = None
         self._engine: AgentEngine | None = None
-        self._api = None                      # attach_api() 注入，未注入则安全跳过
+        self._store = None                    # attach_store() 注入，未注入则安全跳过
         self._current_article_id: str | None = None
         self._current_fav = False
         self._sess_id: str | None = None      # 面板正在看的会话 id（并行事件过滤用）
@@ -1023,13 +1022,13 @@ class AnswerWindow(QWidget):
         self._reset_layout()
 
     # ---------- 会话：💬 列表 / ★ 收藏 / 历史只读 ----------
-    def attach_api(self, api) -> None:
-        """主窗 ctor 调；💬 列表与 ★ 收藏要打后端。未注入时相关路径安全跳过。"""
-        self._api = api
+    def attach_store(self, store: Store) -> None:
+        """主窗 ctor 调；💬 列表与 ★ 收藏要读写本地库。未注入时相关路径安全跳过。"""
+        self._store = store
 
     def set_current_article(self, article_id: str | None,
                             fav: bool = False) -> None:
-        """落库后主窗调（传后端 id 与收藏态）；开新题时主窗传 None。"""
+        """落库后主窗调（传本地 id 与收藏态）；开新题时主窗传 None。"""
         self._current_article_id = article_id or None
         self._current_fav = bool(fav)
         self._sync_fav_btn()
@@ -1044,13 +1043,13 @@ class AnswerWindow(QWidget):
            position=InfoBarPosition.TOP)
 
     def _toggle_fav(self):
-        if self._api is None or not self._current_article_id:
+        if self._store is None or not self._current_article_id:
             self._toast(False, "还没有会话", "先按 Alt+S 截一道题，落库后才能收藏")
             return
         want = 0 if self._current_fav else 1
         try:
-            self._api.update_article(self._current_article_id, fav=want)
-        except (ApiError, NetworkError) as e:
+            self._store.update_article(self._current_article_id, fav=want)
+        except StoreError as e:
             self._toast(False, "收藏失败", str(e), 2600)
             return
         self._current_fav = want == 1
@@ -1120,12 +1119,12 @@ class AnswerWindow(QWidget):
         self._load_sessions()
 
     def _load_sessions(self):
-        if self._api is None:
-            self._render_sessions([], "未连接后端")
+        if self._store is None:
+            self._render_sessions([], "数据层未就绪")
             return
         if self._sess_task is not None and self._sess_task.isRunning():
             return
-        self._sess_task = _SessionsTask(self._api, self)
+        self._sess_task = _SessionsTask(self._store, self)
         self._sess_task.ok.connect(self._render_sessions)
         self._sess_task.failed.connect(lambda m: self._render_sessions([], m))
         self._sess_task.start()
@@ -1150,7 +1149,7 @@ class AnswerWindow(QWidget):
             self._pop_box.insertWidget(0, tip)
             return
         # 栈序（2026-10-03 反馈：最新会话必须在顶部、往上堆）——
-        # 客户端按 updateTime 倒序兜底，不赌后端排序
+        # 按 updateTime 倒序兜底，不依赖查询顺序
         rows = sorted(rows, key=lambda r: str(r.get("updateTime") or ""),
                       reverse=True)
         # 行内预留：pop 边距 24 + 行边距 14 + ★✎× 72 + 间距 24 ≈ 150
@@ -1167,12 +1166,12 @@ class AnswerWindow(QWidget):
             self._pop_box.insertWidget(self._pop_box.count() - 1, row)
 
     def _row_fav(self, art: dict, row: _SessionRow):
-        if self._api is None:
+        if self._store is None:
             return
         want = 0 if art.get("fav") else 1
         try:
-            self._api.update_article(str(art.get("id") or ""), fav=want)
-        except (ApiError, NetworkError) as e:
+            self._store.update_article(str(art.get("id") or ""), fav=want)
+        except StoreError as e:
             self._toast(False, "收藏失败", str(e), 2600)
             return
         art["fav"] = want
@@ -1185,7 +1184,7 @@ class AnswerWindow(QWidget):
 
     def _rename_row(self, art: dict):
         """行内 ✎ 重命名——与记录页同款对话框，成功后刷新列表（§8-6）。"""
-        if self._api is None:
+        if self._store is None:
             return
         art_id = str(art.get("id") or "")
         title = str(art.get("title") or "新会话")
@@ -1193,8 +1192,8 @@ class AnswerWindow(QWidget):
         if not new or new == title:
             return
         try:
-            self._api.update_article(art_id, title=new)
-        except (ApiError, NetworkError) as e:
+            self._store.update_article(art_id, title=new)
+        except StoreError as e:
             self._toast(False, "重命名失败", str(e), 2600)
             return
         if art_id and art_id == self._current_article_id:
@@ -1203,7 +1202,7 @@ class AnswerWindow(QWidget):
 
     def _delete_row(self, art: dict):
         """行内 × 删除——确认后刷新；删的是正看着的会话就回空面板（§8-6）。"""
-        if self._api is None:
+        if self._store is None:
             return
         art_id = str(art.get("id") or "")
         title = str(art.get("title") or "新会话")
@@ -1213,9 +1212,9 @@ class AnswerWindow(QWidget):
         if not box.exec():
             return
         try:
-            self._api.delete_article(art_id)
-            purge_article_files(art, self._api)   # 删会话连带删题图
-        except (ApiError, NetworkError) as e:
+            self._store.delete_article(art_id)
+            purge_article_files(art)   # 删会话连带删题图
+        except StoreError as e:
             self._toast(False, "删除失败", str(e), 2600)
             return
         if art_id and art_id == self._current_article_id:
@@ -1243,7 +1242,7 @@ class AnswerWindow(QWidget):
         self._current_fav = bool(article.get("fav"))
         self._sync_fav_btn()
         self.title.setText(str(article.get("title") or "Spore"))
-        shot = article_shot(article, self._api) if self._api else ""
+        shot = article_shot(article)
         if shot:
             self._show_shot(shot)
         msgs = msgs_of(article)

@@ -1,22 +1,22 @@
 """MainWindow 构造回归（2026-10-03「客户端都跑不起来」）。
 
-根因现场：eventFilter 在 FluentWindow.__init__ 期间就被 Qt 调进来
-（qframeless 过滤器链），彼时 _qr_pop 未建 → AttributeError 被 shiboken
-吞成 SystemError: returned NULL → 启动即崩。这里真构造 MainWindow 钉死。
+根因现场：Qt 在 FluentWindow.__init__ 期间就派发事件（qframeless 过滤器链），
+早期实现里访问了尚未创建的控件 → shiboken 吞成 SystemError 启动即崩。
+这里真构造 MainWindow 钉死（数据用临时 SQLite，不碰真库）。
 """
 
 import pytest
 from PySide6.QtWidgets import QSystemTrayIcon
 
-from spore_client.api import ApiClient
 from spore_client.main_window import MainWindow
+from spore_client.store import Store
 
 
 @pytest.fixture(scope="module")
-def main_win(qapp):
-    # 端口 1：三个后台取数（记录页自载 ×2、/users/me）立刻拒绝，不碰真后端
-    win = MainWindow(ApiClient("http://127.0.0.1:1/api"))
-    for t in (win.records._task, win.records._cat_task, win._me_task):
+def main_win(qapp, tmp_path_factory):
+    store = Store(tmp_path_factory.mktemp("db") / "spore.db")
+    win = MainWindow(store)
+    for t in (win.records._task, win.records._cat_task):
         if t is not None:
             t.wait(3000)
     qapp.processEvents()
@@ -26,9 +26,7 @@ def main_win(qapp):
 
 
 def test_main_window_constructs_despite_early_qt_events(main_win, qapp):
-    # 构造本身通过 = eventFilter/resizeEvent 的构造期守卫有效（崩过就红）
-    # /users/me 打不通 → 头像保持占位「?」
-    assert main_win.avatar_btn.text() == "?"
+    # 构造本身通过 = 构造期的事件/尺寸路径没有提前访问未建控件
     # 出生位置（2026-10-03 反馈「显示完全」）：放得下必须整窗在屏内；
     # 放不下（offscreen 测试屏只有 800×800）钳回左上角、保左上可见
     avail = qapp.primaryScreen().availableGeometry()
@@ -63,12 +61,10 @@ def test_persist_turn_writes_backend_id_so_next_turn_puts(main_win, monkeypatch)
     sess.messages.append(Msg(role="assistant", kind="answer", ans="B（错）"))
     posts: list = []
     puts: list = []
-    monkeypatch.setattr(main_win.api, "create_article",
+    monkeypatch.setattr(main_win.store, "create_article",
                         lambda body: posts.append(body) or {"id": "art-77"})
-    monkeypatch.setattr(main_win.api, "update_article",
+    monkeypatch.setattr(main_win.store, "update_article",
                         lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
-    monkeypatch.setattr(main_win.api, "push_attachment",
-                        lambda *a, **k: None)
     try:
         main_win._persist_turn_sync(sess)          # 第一回合：POST 新会话
         assert posts and not puts
@@ -96,15 +92,12 @@ def test_placeholder_lands_row_then_end_puts(main_win, monkeypatch):
     sess.messages.append(Msg(role="assistant", kind="answer", ans="A"))
     posts: list = []
     puts: list = []
-    pushes: list = []
     reloads: list = []
-    monkeypatch.setattr(main_win.api, "create_article",
+    monkeypatch.setattr(main_win.store, "create_article",
                         lambda body: posts.append(body) or {"id": "art-P3",
                                                             "fav": 0})
-    monkeypatch.setattr(main_win.api, "update_article",
+    monkeypatch.setattr(main_win.store, "update_article",
                         lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
-    monkeypatch.setattr(main_win.api, "push_attachment",
-                        lambda aid, p: pushes.append((aid, p)))
     monkeypatch.setattr(main_win.records, "reload",
                         lambda: reloads.append(1))
     try:
@@ -119,7 +112,6 @@ def test_placeholder_lands_row_then_end_puts(main_win, monkeypatch):
         assert len(posts) == 1                     # 绝不再开第二条会话
         assert puts and puts[0][0] == "art-P3"
         assert puts[0][1]["messages"]              # 完整正文 PUT 进去
-        assert pushes == [("art-P3", "C:/x/shot.png")]  # 题图 turn-end 首推
         assert sess.id not in main_win._placeholders
     finally:
         UNREAD.discard("art-P3")
@@ -134,7 +126,7 @@ def test_aborted_turn_drops_placeholder_row(main_win, monkeypatch):
     sess.backend_id = "art-Z"
     main_win._placeholders[sess.id] = "art-Z"
     deletes: list = []
-    monkeypatch.setattr(main_win.api, "delete_article",
+    monkeypatch.setattr(main_win.store, "delete_article",
                         lambda aid: deletes.append(aid))
     monkeypatch.setattr(main_win.records, "reload", lambda: None)
     monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: sess)
@@ -156,7 +148,7 @@ def test_placeholder_never_created_after_turn_finished(main_win, monkeypatch):
     sess = Session()
     sess.status = "done"
     posts: list = []
-    monkeypatch.setattr(main_win.api, "create_article",
+    monkeypatch.setattr(main_win.store, "create_article",
                         lambda body: posts.append(body) or {"id": "x"})
     main_win._placeholder_sync(sess)
     assert posts == []
@@ -171,10 +163,8 @@ def test_placeholder_filled_once_after_initial_answer(main_win, qapp, monkeypatc
     from spore_client.records import UNREAD
 
     puts: list = []
-    monkeypatch.setattr(main_win.api, "update_article",
+    monkeypatch.setattr(main_win.store, "update_article",
                         lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
-    monkeypatch.setattr(main_win.api, "push_attachment",
-                        lambda *a, **k: None)
     monkeypatch.setattr(main_win.records, "reload", lambda: None)
 
     # 历史接续回合（backend_id 有但没占位）：verify-delta 不许触发补写

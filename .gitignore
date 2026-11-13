@@ -1,11 +1,7 @@
-target/
 logs/
-data/
 .idea/
 *.iml
 *.class
-db.properties
-device.token
 
 # Python 客户端（client/）
 client/.venv/
@@ -19,10 +15,8 @@ client/.venv-build/
 client/build/
 client/dist/
 
-# 题库目录（题图运行时数据，设置页可切换到仓库根下任意目录）
+# 会话归档（本地素材）
 herstory/
 
 # 打包时由 tools/make_icon.py 重生成（勿与 spore_client/assets 混淆）
 client/assets/
-tomcat-base/
-tomcat.home

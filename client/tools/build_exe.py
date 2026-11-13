@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -51,7 +52,7 @@ def ensure_env() -> None:
     print(f'  "{BASE_PY}" -m pip --python "{VENV_PY}" install '
           "-i https://mirrors.aliyun.com/pypi/simple/ "
           '"PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" '
-          "pyinstaller httpx markdown qrcode Pillow keyboard")
+          "pyinstaller httpx markdown Pillow keyboard")
     sys.exit(2)
 
 
@@ -116,7 +117,12 @@ def main() -> int:
     assert (exe.parent / "_internal").is_dir(), "缺 _internal/（onedir 结构不对）"
 
     # 窗口存活自检：onedir 是单进程（onefile 那种 bootloader 父子两枚没有了）。
-    # 进程先死 = import 崩；到点没窗口 = 挂死；两种都算失败，且都打印耗时
+    # 进程先死 = import 崩；到点没窗口 = 挂死；两种都算失败，且都打印耗时。
+    # 另查启动日志——PyInstaller 的「Failed to execute script」错误框也是可见窗口，
+    # 只看窗口会把「import 即崩」误判成成功（2026-11-13 缺 tzdata 实测栽过）。
+    log_path = Path(os.environ.get(
+        "SPORE_HOME", Path.home() / "AppData" / "Local" / "Spore")) / "logs" / "client.log"
+    log_from = log_path.stat().st_size if log_path.is_file() else 0
     proc = subprocess.Popen([str(exe)], cwd=str(exe.parent))
     t0 = time.monotonic()
     while proc.poll() is None and not window_shows_up(proc.pid):
@@ -124,12 +130,17 @@ def main() -> int:
             break
         time.sleep(0.3)
     elapsed = time.monotonic() - t0
-    ok = proc.poll() is None and window_shows_up(proc.pid)
-    print(f"自检：窗口 {'出现' if ok else '未出现'}，耗时 {elapsed:.1f}s"
+    started = False
+    if log_path.is_file():
+        with log_path.open("rb") as fh:
+            fh.seek(log_from)
+            started = b"starting (frozen=True)" in fh.read()
+    ok = proc.poll() is None and window_shows_up(proc.pid) and started
+    print(f"自检：窗口 {'出现' if ok else '未出现'}，启动日志 "
+          f"{'有' if started else '无'}，耗时 {elapsed:.1f}s"
           f"（阈值 {WINDOW_TIMEOUT}s，进程退出码 {proc.poll()}）")
     if ok:
-        # 收尸：/T 连它拉起的子进程一起杀（自检时 dist/ 里没有 jar，
-        # 通常不会有后端；防御性带上）
+        # 收尸：/T 连它拉起的子进程一起杀（当前是单进程；防御性带上）
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                        capture_output=True)
         try:
