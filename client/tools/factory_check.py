@@ -43,6 +43,7 @@ DISK_MARKERS = (
     "icon-16.png",
     "icon-128.png",
     "PySide6",                      # Qt 原生件
+    "matplotlib",                   # 懒加载依赖：漏了公式静默变源码（2026-11-13）
 )
 # PYZ 层标记：纯 Python 包，只查 exe 内字节码（zip 路径上没有）
 PYZ_MARKERS = ("markdown", "keyboard", "spore_client")

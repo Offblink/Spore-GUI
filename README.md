@@ -73,7 +73,8 @@ cd client
 .venv/Scripts/python.exe -m spore_client.main
 ```
 
-依赖：Python 3.13、PySide6 6.10.2、PySide6-Fluent-Widgets 1.11.3、httpx、markdown、Pillow、keyboard。
+依赖写在 `client/requirements.txt`（Python 3.13；PySide6 6.10.2 / PySide6-Fluent-Widgets 1.11.3
+等版本钉在里面，CI、开发 venv、打包 venv 共用这一份）。
 源码运行同样把数据写进 `%LOCALAPPDATA%\Spore\`（可用 `SPORE_HOME` 重定向）。
 
 ### 门禁
@@ -90,8 +91,7 @@ ruff check .
 # 干净构建 venv（别用开发 venv：它会带进全局 PyQt5 / torch）
 python -m venv --without-pip client/.venv-build
 python -m pip --python client/.venv-build/Scripts/python.exe install \
-  "PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" \
-  pyinstaller httpx markdown Pillow keyboard
+  -r client/requirements.txt pyinstaller
 
 python client/tools/build_exe.py               # 产物 client/dist/Spore/
 python client/tools/make_release_bundle.py    # 发行 zip

@@ -1,0 +1,10 @@
+# Spore 客户端运行依赖（CI / 开发 venv / 打包 venv 共用这一份，别再各写一行）
+# matplotlib 是**懒加载**的（latex_render：首次遇到公式才 import），静态 import 图里
+# 看不见它——2026-11-13 CI 红四次的根因就是它被从安装清单里删掉，公式静默退化成源码。
+PySide6==6.10.2
+PySide6-Fluent-Widgets==1.11.3
+httpx
+markdown
+Pillow
+keyboard
+matplotlib

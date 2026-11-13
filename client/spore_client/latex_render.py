@@ -133,7 +133,11 @@ def _formula_html(src: str, raw: str, color: str) -> str:
         return cached
     try:
         png, w, h = _render(src, color)
-    except Exception:                      # 契约：任何渲染失败都回退显示源码
+    except Exception as e:                 # 契约：任何渲染失败都回退显示源码
+        # 留痕：缺依赖（打包漏 matplotlib）与「公式本身排不出来」在界面上长得一样，
+        # 都只是显示源码——日志是唯一能区分的地方（每个公式只记一次，结果进缓存）
+        from .log import get_logger
+        get_logger().warning("math render failed → 显示源码：%s", e)
         out = _html.escape(raw)
     else:
         uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")

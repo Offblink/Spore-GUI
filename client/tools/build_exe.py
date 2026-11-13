@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -51,8 +52,7 @@ def ensure_env() -> None:
     print(f'  "{BASE_PY}" -m venv --without-pip "{ROOT / ".venv-build"}"')
     print(f'  "{BASE_PY}" -m pip --python "{VENV_PY}" install '
           "-i https://mirrors.aliyun.com/pypi/simple/ "
-          '"PySide6==6.10.2" "PySide6-Fluent-Widgets==1.11.3" '
-          "pyinstaller httpx markdown Pillow keyboard")
+          f'-r "{ROOT / "requirements.txt"}" pyinstaller')
     sys.exit(2)
 
 
@@ -115,6 +115,11 @@ def main() -> int:
     exe = DIST / "Spore" / "Spore.exe"
     assert exe.is_file(), f"缺产物 {exe}"
     assert (exe.parent / "_internal").is_dir(), "缺 _internal/（onedir 结构不对）"
+    # 懒加载的依赖最容易漏（matplotlib 只被 latex_render 的函数内 import）：
+    # 漏了照样能起窗，但公式会静默退化成源码——必须在这里拦
+    assert (exe.parent / "_internal" / "matplotlib").is_dir(), (
+        "matplotlib 没进包（公式会退化成源码）：先在 .venv-build 里 "
+        "pip install -r requirements.txt 再构建")
 
     # 窗口存活自检：onedir 是单进程（onefile 那种 bootloader 父子两枚没有了）。
     # 进程先死 = import 崩；到点没窗口 = 挂死；两种都算失败，且都打印耗时。
@@ -149,6 +154,21 @@ def main() -> int:
             proc.kill()
     assert ok, (f"窗口 exe {WINDOW_TIMEOUT}s 内没起窗（退出码 {proc.poll()}；"
                 "缺 GUI 依赖？看 %LOCALAPPDATA%\\Spore\\logs）")
+
+    # 懒加载链路自检：窗口出现 ≠ 功能可用。matplotlib/pyparsing 只在用到公式时才
+    # import，spec 里排错一个 stdlib 模块就能让它整条崩掉、界面只是静默显示源码
+    # （2026-11-13：unittest 被排除 → 公式全废，窗口照常起）。结果写文件、返回码判据。
+    probe = exe.parent / "_selftest.json"
+    probe.unlink(missing_ok=True)
+    run = subprocess.run([str(exe), "--selftest", str(probe)],
+                         cwd=str(exe.parent), capture_output=True, timeout=180)
+    payload = {}
+    if probe.is_file():
+        payload = json.loads(probe.read_text(encoding="utf-8"))
+        probe.unlink(missing_ok=True)
+    assert run.returncode == 0 and payload.get("ok"), (
+        f"冻结件自检失败（rc={run.returncode}）：{payload.get('detail', '无输出')}")
+    print(f"自检：公式链路 {payload.get('detail', '')}")
 
     digest, nfiles, nbytes = tree_digest(exe.parent)
     print(f"OK   {exe.parent}")

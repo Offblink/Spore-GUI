@@ -37,7 +37,10 @@ a = Analysis(
     excludes=[
         # pkg_resources 冻结后要 jaraco.text，import 即崩（打包纪律第一条）
         "pkg_resources", "setuptools", "jaraco", "pip", "_distutils_hack",
-        "tkinter", "unittest", "pydoc", "test",
+        "tkinter", "pydoc", "test",
+        # unittest **不能排**：pyparsing（matplotlib 的依赖）在 import 期
+        # `from .testing import …` → `import unittest`，排掉后 matplotlib 一 import 就
+        # ModuleNotFoundError，公式静默退化成源码（2026-11-13 冻结件实测）
         # 另一套 Qt 绑定绝不进包
         "PyQt5", "PyQt6", "PySide2",
     ],
