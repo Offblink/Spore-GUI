@@ -1,4 +1,4 @@
-"""设置页：MV3 options.html 的卡片结构（模型 / 快捷键 / 数据）。
+"""设置页：MV3 options.html 的卡片结构（模型与检索）。
 
 卡片与字段样式照 options.html（白底、1px #e6e8f2、圆角 16、字段 label 11.5px
 muted、hint 12.5px、输入圆角 10 底 #fafbfe focus 边 #ec4899）。Qt 样式表不支持
@@ -11,7 +11,6 @@ letter-spacing / text-transform / box-shadow：字距用字号+颜色近似，
 红线（2026-10-03 拍板改版）：api_key 只依赖 config（LOCALAPPDATA/Spore/
 ui_settings.json），环境变量废除；输入框不回显，只显示「（已设置）」，
 粘贴新值回车即覆盖。
-简报 §1：半圆小角（hideToggle）不移植，快捷键卡只有两个 kbd 徽标。
 """
 
 from __future__ import annotations
@@ -344,28 +343,6 @@ class SettingsPane(QWidget):
             err.setStyleSheet("font-size: 12.5px; color: #d02747;")
             lay.addWidget(err)
             self._err_hint = err
-        stack.addWidget(card)
-
-        # ================= 卡三：快捷键 =================
-        card, lay, title = build_card("快捷键")
-        self.cards["keys"] = title
-        for cap, key in (("截图快捷键：", "Alt+S"), ("浮窗快捷键：", "Alt+Z")):
-            row = QHBoxLayout()
-            row.addWidget(CaptionLabel(cap))
-            row.addWidget(kbd_badge(key))
-            row.addStretch(1)
-            lay.addLayout(row)
-
-        lay.addWidget(hint_label(
-            "全局热键随进程常驻；关窗收进托盘后仍可用，托盘右键退出才注销。"))
-        stack.addWidget(card)
-
-        # ================= 卡四：数据 =================
-        card, lay, title = build_card("数据")
-        self.cards["data"] = title
-        lay.addWidget(hint_label(
-            "搜题记录、科目与设置都只存在本机（LOCALAPPDATA/Spore），"
-            "不上传、不联网同步。备份就复制该目录里的 spore.db。"))
         stack.addWidget(card)
         stack.addStretch(1)
 
