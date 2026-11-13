@@ -1211,6 +1211,7 @@ class AnswerWindow(QWidget):
         self._pop_scroll = QScrollArea()
         self._pop_scroll.setWidgetResizable(True)
         self._pop_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        theme.style(self._pop_scroll, scroll_style)   # 否则 viewport 用系统浅色底
         host = QWidget()
         host.setStyleSheet("QWidget{background:transparent;}")
         self._pop_box = QVBoxLayout(host)

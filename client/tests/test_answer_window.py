@@ -359,3 +359,16 @@ def test_drop_toast_is_short_on_success_and_error(qapp, monkeypatch):
     assert len(content) <= 41
     assert content.endswith("…")
     assert "boom" in content
+
+
+# ---------- 💬 会话列表浮层跟主题（2026-11-13 用户贴图：深色下白底） ----------
+
+def test_sessions_popup_is_themed(qapp):
+    """浮层自身与它的 QScrollArea 都必须显式上色——QScrollArea 不给背景就吃
+    系统浅色 viewport，深色下整张列表变白底浅字（用户实测截图）。"""
+    from spore_client import theme
+
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    surface = theme.current().surface
+    assert surface in win._pop.styleSheet()
+    assert surface in win._pop_scroll.styleSheet()
