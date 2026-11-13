@@ -92,6 +92,8 @@ class MainWindow(FluentWindow):
         self.answer_window.followupRequested.connect(self._followup)
         self.records.followupRequested.connect(self._records_followup)
         self.records.cancelRequested.connect(self.engine.cancel)
+        # 设置页同步落库 → 记录页立刻重载（否则要切一次页才看到下行数据）
+        self.settings.syncFinished.connect(self._on_synced)
         self.records.verifyRequested.connect(self._records_verify)
 
         # 截屏完成 → 喂给作答浮窗（P3 只落盘的那一步现在接上了）
@@ -122,6 +124,10 @@ class MainWindow(FluentWindow):
             self._llm_errors = InfoBar.warning(  # 存引用防 GC
                 "作答未就绪", "；".join(self.llm_settings.errors),
                 parent=self, duration=8000, position=InfoBarPosition.TOP)
+
+    def _on_synced(self):
+        self.records.load_categories()
+        self.records.reload()
 
     # ---------- 页签懒加载 ----------
     def _on_tab_changed(self, idx):

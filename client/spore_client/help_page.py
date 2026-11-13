@@ -74,7 +74,7 @@ class HelpPane(QWidget):
             lay.addWidget(setting_label("　• " + line))
         for line in (
             "日志：程序运行日志，遇到问题可以来这里看。",
-            "设置：模型、核实方式与检索都在这里。",
+            "设置：模型、核实方式与检索、服务器同步都在这里。",
         ):
             lay.addWidget(setting_label(line))
         stack.addWidget(card)
@@ -82,7 +82,8 @@ class HelpPane(QWidget):
         # ================= 卡四：数据都在哪 =================
         card, lay, _ = build_card("数据都在哪")
         for line in (
-            "全部只存在本机 LOCALAPPDATA/Spore，不上传、不联网同步。",
+            "默认只在本机 LOCALAPPDATA/Spore；只有设置页连了服务器才会同步。",
+            "已连接服务器时：sync_state.json 存地址与 token，口令不落盘。",
             "搜题记录与科目：spore.db（备份就复制这个文件）。",
             "设置：ui_settings.json 里存着 API Key，请不要外传。",
             "截图缓存：同目录的 captures。",

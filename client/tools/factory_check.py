@@ -1,4 +1,4 @@
-"""出厂检查：发行 zip 的红线（2026-11-13 起无后端、无账号、无同步）。
+"""出厂检查：发行 zip 的红线（单机为准；同步是可选的客户端能力）。
 
 用法（必须用构建 venv——脚本要读 exe 的 PYZ）：
     MSYS_NO_PATHCONV=1 cmd.exe /c ".venv-build\\Scripts\\python.exe tools\\factory_check.py"
@@ -7,7 +7,8 @@
 红线（任一不过 → 退出码 1）：
 1. zip 内任何层级无 .bat（Tomcat 那套已下线，发行包也不该带脚本）；
 2. 本机私有文件不进包：db.properties / application-local.yml / ui_settings.json /
-   device.token（历史遗留物与真实口令都可能藏在里面）；嵌套 jar/war 再钻一层查；
+   device.token / sync_state.json（历史遗留物、真实口令与服务器 token 都可能藏在里面）；
+   嵌套 jar/war 再钻一层查；
 3. 关键件抽查分两层（onedir 形态决定的，别混）：
    - 磁盘层 = zip 路径：_internal 里的资产/Qt 原生件；
    - PYZ 层 = exe 内字节码：markdown/keyboard/spore_client 这类纯 Python 包
@@ -34,6 +35,7 @@ FORBIDDEN_NAMES = {
     "application-local.yml",
     "ui_settings.json",
     "device.token",
+    "sync_state.json",
 }
 
 # 磁盘层标记：子串必须至少命中一条 zip entry 路径
