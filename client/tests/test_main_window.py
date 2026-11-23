@@ -81,9 +81,10 @@ def test_persist_turn_writes_backend_id_so_next_turn_puts(main_win, monkeypatch)
 
 
 def test_placeholder_lands_row_then_end_puts(main_win, monkeypatch):
-    """P3 回归：截图回合开局先 POST 占位行（status=answering、messages 空）——
-    会话当即进记录列表；turn-end 走 PUT 换完整正文，绝不二次开新会话；
-    占位回合的题图挪到 turn-end 首推（fa5b379 的 backend_id 回写链不动）。"""
+    """P3 回归：截图回合开局先 POST 占位行（status=answering）——
+    会话当即进记录列表；**占位行必须带上此刻已有的消息（题图）**，
+    否则阶段A/核实途中进程被杀就会留下一条空「新会话」；
+    turn-end 走 PUT 换完整正文，绝不二次开新会话。"""
     from spore_client.answer.session import Msg, Session
     from spore_client.records import UNREAD
 
@@ -103,7 +104,7 @@ def test_placeholder_lands_row_then_end_puts(main_win, monkeypatch):
     try:
         main_win._placeholder_sync(sess)           # 开局占位
         assert posts[0]["status"] == "answering"
-        assert posts[0]["messages"] == []          # 占位行不带正文
+        assert posts[0]["messages"] == [m.to_dict() for m in sess.messages]
         assert sess.backend_id == "art-P3"         # 回写：turn-end 才能走 PUT
         assert main_win._placeholders[sess.id] == "art-P3"
         assert reloads                             # 列表当即刷新（P3 的核心诉求）
@@ -155,10 +156,10 @@ def test_placeholder_never_created_after_turn_finished(main_win, monkeypatch):
     assert sess.backend_id == ""
 
 
-def test_placeholder_filled_once_after_initial_answer(main_win, qapp, monkeypatch):
-    """P3 增强：回合首个 verify-delta（=阶段A初答完毕）→ 占位行立即补上内容，
-    用户不再看到空白「新会话」；每回合只补一次；没占位的历史接续回合不碰；
-    turn-end 收尾把填充旗收掉、全量 PUT 照旧。"""
+def test_placeholder_filled_once_after_phase_a(main_win, qapp, monkeypatch):
+    """P3 增强：阶段A 收口的 phase-a 事件 → 占位行立即补上内容（题图+初答+标题），
+    用户不再在整段核实期间看到空白「新会话」；每回合只补一次；
+    没占位的历史接续回合不碰；turn-end 收尾把填充旗收掉、全量 PUT 照旧。"""
     from spore_client.answer.session import Msg, Session
     from spore_client.records import UNREAD
 
@@ -173,18 +174,17 @@ def test_placeholder_filled_once_after_initial_answer(main_win, qapp, monkeypatc
     monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: plain)
     try:
         main_win._engine_event(
-            {"type": "verify-delta", "sid": plain.id, "ran": True})
+            {"type": "phase-a", "sid": plain.id})
         qapp.processEvents()
         assert puts == []
 
-        # 占位回合：首个 verify-delta 补一次，第二个不再补
+        # 占位回合：phase-a 补一次，后续 verify-delta 不再补
         sess = Session(title="截图回合", backend_id="art-F")
         sess.messages.append(Msg(role="user", kind="answer", text="", hasImage=True))
         sess.messages.append(Msg(role="assistant", kind="answer", ans="B"))
         main_win._placeholders[sess.id] = "art-F"
         monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: sess)
-        main_win._engine_event(
-            {"type": "verify-delta", "sid": sess.id, "ran": True})
+        main_win._engine_event({"type": "phase-a", "sid": sess.id})
         qapp.processEvents()
         assert len(puts) == 1
         assert puts[0][0] == "art-F" and puts[0][1]["messages"]
@@ -204,3 +204,35 @@ def test_placeholder_filled_once_after_initial_answer(main_win, qapp, monkeypatc
         main_win._placeholders.pop(sess.id, None)
         main_win._ph_filled.discard(sess.id)
         UNREAD.discard("art-F")
+
+
+def test_placeholder_fill_waits_for_placeholder_then_verify_delta_fallback(
+        main_win, qapp, monkeypatch):
+    """phase-a 先到、占位行还没落（QTimer 竞态）：不许吞掉本回合唯一的填充机会；
+    占位出现后由 verify-delta 兜底补上；没占位的回合永远不补。"""
+    from spore_client.answer.session import Msg, Session
+    from spore_client.records import UNREAD
+
+    puts: list = []
+    monkeypatch.setattr(main_win.store, "update_article",
+                        lambda aid, **kw: puts.append((aid, kw)) or {"id": aid})
+    monkeypatch.setattr(main_win.records, "reload", lambda: None)
+
+    sess = Session(title="截图回合", backend_id="art-R")
+    sess.messages.append(Msg(role="user", kind="answer", text="", hasImage=True))
+    sess.messages.append(Msg(role="assistant", kind="answer", ans="C"))
+    monkeypatch.setattr(main_win.engine, "session_by_id", lambda sid: sess)
+    try:
+        main_win._engine_event({"type": "phase-a", "sid": sess.id})
+        qapp.processEvents()
+        assert puts == []                     # 还没占位：不补，也不占掉机会
+        assert sess.id not in main_win._ph_filled
+
+        main_win._placeholders[sess.id] = "art-R"
+        main_win._engine_event({"type": "verify-delta", "sid": sess.id, "ran": True})
+        qapp.processEvents()
+        assert len(puts) == 1 and puts[0][0] == "art-R"
+    finally:
+        main_win._placeholders.pop(sess.id, None)
+        main_win._ph_filled.discard(sess.id)
+        UNREAD.discard("art-R")

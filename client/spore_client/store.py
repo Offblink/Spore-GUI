@@ -294,6 +294,20 @@ class Store:
             conn.execute(f"UPDATE article SET {', '.join(sets)} WHERE id = ?", args)
         return self.article(article_id)
 
+    def recover_inflight(self) -> int:
+        """进程重启时收尾上一次遗留的「进行中」行。
+
+        进程没了，答到一半的回合不会再有人推进：状态停在 answering/verifying/
+        searching 会让记录页永远显示「核实中」。截图与阶段A 初答在收口时就已
+        落库（占位行带正文），所以这里只把状态改成 done、抬 update_time（LWW 上行）。
+        """
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE article SET status = 'done', update_time = ?"
+                " WHERE deleted = 0 AND status IN"
+                " ('answering','verifying','searching')", (now_ms(),))
+            return int(cur.rowcount or 0)
+
     def delete_article(self, article_id: str) -> None:
         """软删（墓碑）：行留着让云端同步把删除传播出去，界面查询已过滤。"""
         with self._conn() as conn:

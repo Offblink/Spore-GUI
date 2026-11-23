@@ -241,6 +241,11 @@ class AgentEngine:
         answer.why = p["why"] or answer.why
         self._emit({"type": "answer-delta", "idx": idx, **_ans_dict(answer)})
         self._kick_naming(sess, answer)
+        # 阶段A 收口（初答 + 标题都在 sess 上了）→ 显式事件：
+        # 记录页据此把占位行补成完整正文。**不能**等阶段B 的首个 verify-delta ——
+        # 核实要先跑工具检索，十几秒里一个 delta 都不发（实测 13/21/27s），
+        # 那段时间记录列表只有一条空「新会话」。
+        self._emit({"type": "phase-a", "idx": idx})
 
         # ---- 守卫：<<ok>> 自评确定 → 跳核实；但答案与解析打架时必须复核
         certain = is_self_certain(raw_a)

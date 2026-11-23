@@ -178,3 +178,25 @@ def test_refuses_database_from_newer_version(tmp_path):
         conn.execute("PRAGMA user_version = 99")
     with pytest.raises(StoreError):
         Store(path)
+
+
+def test_recover_inflight_finishes_zombie_rows(store):
+    """进程重启收尾：answering/verifying/searching 行一律改成 done，
+    已完成的 done/error 行与墓碑不动；update_time 抬起（LWW 会带上行）。"""
+    a = store.create_article({"title": "作答中", "status": "answering",
+                              "messages": [{"role": "user", "imagePath": "x.jpg"}]})
+    b = store.create_article({"title": "核实中", "status": "verifying", "messages": []})
+    c = store.create_article({"title": "完成", "status": "done", "messages": []})
+    d = store.create_article({"title": "删除", "status": "answering", "messages": []})
+    store.delete_article(d["id"])
+    before_update = a["updateTime"]
+
+    assert store.recover_inflight() == 2
+
+    rows = {r["id"]: r for r in store.articles()["list"]}
+    assert rows[a["id"]]["status"] == "done"
+    assert rows[b["id"]]["status"] == "done"
+    assert rows[c["id"]]["status"] == "done"
+    assert d["id"] not in rows                       # 墓碑不复活
+    assert rows[a["id"]]["updateTime"] >= before_update
+    assert rows[a["id"]]["messages"] == [{"role": "user", "imagePath": "x.jpg"}]

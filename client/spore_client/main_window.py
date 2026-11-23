@@ -49,6 +49,14 @@ class MainWindow(FluentWindow):
     def __init__(self, store: Store, parent=None):
         super().__init__(parent)
         self.store = store
+        # 上次进程留下的 answering/verifying 行：进程已重启，回合不可能还在跑。
+        # 正文（截图+初答）在阶段A 收口时已落库，这里只把状态收尾，别让列表永远「核实中」。
+        try:
+            n = store.recover_inflight()
+            if n:
+                LOG.info("recover_inflight: %d 行收尾", n)
+        except Exception as e:  # noqa: BLE001 —— 收尾失败不阻断起窗
+            LOG.error("recover_inflight failed: %s", e)
         self.setWindowTitle("Spore")
         # 用户 2026-10-02：「GUI 应用的长宽都不够」——默认 1280×860，下限 1024×700
         self.resize(1280, 860)
@@ -249,9 +257,10 @@ class MainWindow(FluentWindow):
         sess = self.engine.session_by_id(ev.get("sid")) or self.engine.session
         self.answer_window.on_event(ev)  # 面板内部按 sid 过滤（并行回合）
         self.records.on_engine_event(sess, ev)  # 记录页直播（§ 反馈）
-        if t == "verify-delta":
-            # 初答完毕（阶段A收口后的首个 verify-delta）：占位行先补上内容，
-            # 用户不再盯着一条空白「新会话」；turn-end 仍会全量 PUT 收尾
+        if t in ("phase-a", "verify-delta"):
+            # phase-a = 阶段A收口（初答+标题已就绪）→ 占位行立刻补正文；
+            # verify-delta 留作兜底（旧内核/竞态下没有 phase-a 也能补）。
+            # turn-end 仍会全量 PUT 收尾
             self._maybe_fill_placeholder(sess)
         if t == "turn-end":
             LOG.info("turn-end in %.1fs deltas=%s",
@@ -325,10 +334,13 @@ class MainWindow(FluentWindow):
             return  # 已有行 / 回合已收尾（极快失败竞态）——不制造没人收尾的占位
         t0 = time.monotonic()
         try:
+            # 占位行**带上当前消息**（截屏回合此刻已有用户那张题图）：
+            # 即使进程在阶段A/核实途中被杀，记录里也绝不会只剩一条空「新会话」。
+            messages = [m.to_dict() for m in sess.messages]
             art = self.store.create_article({
                 "title": sess.title,
                 "status": "answering",
-                "messages": [],
+                "messages": messages,
             })
             art_id = str(art.get("id") or "") if isinstance(art, dict) else ""
             if not art_id:
@@ -350,7 +362,9 @@ class MainWindow(FluentWindow):
         """占位行内容填充（P3 增强）：回合首个 verify-delta = 阶段A初答完毕
         （三分支——跳核实/关核实/跑核实——都在 phaseA 后先发它），此刻把已有
         内容 PUT 进占位行。每个回合只补一次；没占过位（历史接续回合）不碰。"""
-        if sess.id not in self._placeholders or sess.id in self._ph_filled:
+        if sess.id in self._ph_filled or sess.id not in self._placeholders:
+            # 占位还没落（QTimer 未跑）时**不许**占掉本回合的唯一填充机会，
+            # 留给下一个触发点（verify-delta / turn-end 兜底）
             return
         self._ph_filled.add(sess.id)
         QTimer.singleShot(0, lambda: self._fill_placeholder_sync(sess))
