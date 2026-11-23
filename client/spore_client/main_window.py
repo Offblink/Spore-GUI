@@ -103,6 +103,7 @@ class MainWindow(FluentWindow):
         # 设置页同步落库 → 记录页立刻重载（否则要切一次页才看到下行数据）
         self.settings.syncFinished.connect(self._on_synced)
         self.records.verifyRequested.connect(self._records_verify)
+        self.records.attach_engine(self.engine)   # 切会话时读引擎内存态（在跑的回合）
 
         # 截屏完成 → 喂给作答浮窗（P3 只落盘的那一步现在接上了）
         self._capture = CaptureController(self._on_captured)

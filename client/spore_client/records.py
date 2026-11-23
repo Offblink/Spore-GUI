@@ -1013,6 +1013,7 @@ class RecordsPane(QWidget):
         self._shot_pm = QPixmap()
         self._cat_task: _CatTask | None = None
         self._live: Session | None = None  # 记录页直播中的接续回合（engine.session）
+        self._engine = None                # 主窗注入：切会话时查「这场还在跑吗」
         self._live_timer = QTimer(self)    # 流式重渲节流（面板同款 200ms）
         self._live_timer.setInterval(200)
         self._live_timer.timeout.connect(self._flush_live)
@@ -1233,7 +1234,7 @@ class RecordsPane(QWidget):
         self._render_tree()
         row = self._current_row()
         if row is not None:
-            self._render_detail(row, keep_shot=True)
+            self._render_current(row, keep_shot=True)
 
     def _emit_verify(self):
         if self.current_id:
@@ -1286,7 +1287,7 @@ class RecordsPane(QWidget):
         self._render_tree()
         row = self._current_row()
         if row is not None:
-            self._render_detail(row)
+            self._render_current(row)
         self._update_hint()
 
     def _on_error(self, msg: str):
@@ -1501,6 +1502,35 @@ class RecordsPane(QWidget):
             self.followupRequested.emit(self.current_id, text)
 
     # ---------- 接续直播（2026-10-03 反馈：追问就地渲染，不开悬浮窗） ----------
+    def attach_engine(self, engine) -> None:
+        """主窗 ctor 调：切会话时能查引擎内存里的在跑会话（MV3 liveSessions 同语义）。"""
+        self._engine = engine
+
+    def _live_for(self, art_id: str) -> Session | None:
+        if self._engine is None:
+            return None
+        return self._engine.session_for_article(art_id)
+
+    def _render_current(self, row: dict | None = None,
+                        keep_shot: bool = False) -> None:
+        """渲染当前选中会话：**在跑的回合优先用引擎内存态**。
+
+        库里那条只到阶段A（题图+初答），核实结果/检索小票要 turn-end 才落库；
+        切走再切回来若读库，这些现场就凭空消失（用户 2026-11-23 实测）。
+        """
+        row = row if row is not None else self._current_row()
+        if row is None:
+            return
+        live = self._live_for(str(row.get("id") or ""))
+        if live is not None:
+            self._live = live
+            self._render_detail(self._live_art(), keep_shot=keep_shot)
+            return
+        # 没有在跑的引擎会话（已收尾 / 切到了别的会话）：回到库里终稿，
+        # 同时摘掉旧直播引用，别让 200ms 定时器再往这个视图灌旧会话
+        self._live = None
+        self._render_detail(row, keep_shot=keep_shot)
+
     def follow_turn(self, sess: Session):
         """记录页发起的接续回合开跑：右栏直播 engine.session，200ms 节流重渲。"""
         self._live = sess
@@ -1570,7 +1600,7 @@ class RecordsPane(QWidget):
             card.set_selected(card._id == art_id)
             if card._id == art_id:
                 card.set_unread(False)
-        self._render_detail(row)
+        self._render_current(row)
         self._update_hint()
 
     def mark_unread(self, art_id: str):

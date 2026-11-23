@@ -250,3 +250,43 @@ def test_cancel_only_stops_the_current_turn(monkeypatch):
     by_sid = {e["sid"]: e for e in events if e["type"] == "turn-end"}
     assert by_sid[second.id].get("aborted") is True
     assert by_sid[first.id].get("aborted") is None   # 后台第一道完整跑完
+
+
+def test_session_for_article_only_returns_running():
+    """切回会话时「吃内存态还是库里快照」的判据：只有还在跑的回合才认。"""
+    eng = AgentEngine(_settings(), lambda ev: None)
+    sess = Session(backend_id="art-live")
+    sess.messages.append(Msg(role="assistant", kind="answer", ans="A"))
+    eng._sessions[sess.id] = sess
+
+    class _Worker:
+        def __init__(self, alive):
+            self.alive = alive
+
+        def is_alive(self):
+            return self.alive
+
+    eng._workers[sess.id] = _Worker(True)
+    assert eng.session_for_article("art-live") is sess
+    assert eng.session_for_article("art-other") is None
+    assert eng.is_running(sess.id)
+
+    eng._workers[sess.id] = _Worker(False)       # 跑完了：库里终稿才是事实源
+    assert eng.session_for_article("art-live") is None
+    assert not eng.is_running(sess.id)
+
+
+def test_verify_stream_writes_note_back_to_answer():
+    """核实正文要同步写回消息对象：切走再切回来从内存态重绘时不丢已流出的说明。"""
+    eng = AgentEngine(_settings(), lambda ev: None)
+    answer = Msg(role="assistant", kind="answer", ans="A")
+    events: list = []
+    eng._emit = events.append
+
+    cb = eng._verify_delta_cb(answer, 3)
+    cb("text", "已核对官网", {"content": "已核对官网", "reasoning": ""})
+
+    assert answer.verifyNote == "已核对官网"
+    assert answer.verifyPending and not answer.verifyRan
+    assert events and events[0]["type"] == "verify-delta"
+    assert events[0]["note"] == "已核对官网"

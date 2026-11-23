@@ -533,3 +533,45 @@ def test_paint_auto_scroll_follows_viewport_edges(qapp):
     final = sb.value()
     QTest.qWait(200)
     assert sb.value() == final
+
+
+def test_select_running_session_renders_engine_memory(qapp):
+    """记录页切走再切回：在跑的会话读引擎内存态，不读库里阶段A 快照。"""
+    from spore_client.answer.session import Msg, Session
+
+    pane = _pane(qapp)
+    live = Session(title="第9题 核实中", backend_id="art-live",
+                   status="verifying")
+    live.messages.append(Msg(role="user", kind="answer", hasImage=True))
+    live.messages.append(Msg(role="assistant", kind="answer", ans="C",
+                             why="解析", tools=["检索 官方文档"],
+                             verifyPending=True,
+                             verifyNote="检索到官方说明：答案 C"))
+    db_row = {"id": "art-live", "title": "新会话", "fav": 0,
+              "status": "answering", "updateTime": "2026-11-23 12:00:00",
+              "messages": []}
+
+    class _Engine:
+        def __init__(self):
+            self.alive = True
+
+        def session_for_article(self, art_id):
+            if self.alive and art_id == live.backend_id:
+                return live
+            return None
+
+    eng = _Engine()
+    pane.attach_engine(eng)
+    pane.rows = [db_row]
+    pane._select_session("art-live")
+
+    assert pane._live is live
+    assert pane.title_lbl.text() == "第9题 核实中"
+    text = pane.body.toPlainText()
+    assert "检索到官方说明：答案 C" in text
+    assert "检索 官方文档" in text
+
+    eng.alive = False                    # 回合收尾：回落到库里终稿
+    pane._select_session("art-live")
+    assert pane._live is None
+    assert pane.title_lbl.text() == "新会话"

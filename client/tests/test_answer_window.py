@@ -372,3 +372,43 @@ def test_sessions_popup_is_themed(qapp):
     surface = theme.current().surface
     assert surface in win._pop.styleSheet()
     assert surface in win._pop_scroll.styleSheet()
+
+
+def test_open_running_session_renders_engine_memory_not_db(qapp):
+    """切走再切回在跑的会话：核实结果与检索小票必须从引擎内存态重绘。
+
+    库里的行只到阶段A（题图+初答），核实信息 turn-end 才落库；旧实现 load_history
+    一律读库 → 用户看到「检索结果没了」（2026-11-23 实测）。
+    """
+    from spore_client.answer.session import Msg, Session
+
+    live = Session(title="第17题 已核实标题", backend_id="art-live",
+                   status="verifying")
+    live.messages.append(Msg(role="user", kind="answer", hasImage=True,
+                             imagePath=""))
+    live.messages.append(Msg(role="assistant", kind="answer", ans="B（错）",
+                             why="解析", tools=["检索 官方文档"],
+                             verifyPending=True, verifyNote="已核对官方文档：B 错"))
+    db_row = {"id": "art-live", "title": "新会话", "status": "answering",
+              "messages": []}
+
+    class _Engine:
+        def session_for_article(self, art_id):
+            return live if art_id == "art-live" else None
+
+    win = AnswerWindow(LlmSettings(api_key="sk-test"))
+    win.attach_engine(_Engine())
+    win.load_history(db_row)
+
+    assert win.title.text() == "第17题 已核实标题"
+    assert win._sess_id == live.id
+    assert win._current_article_id == "art-live"
+    notes = [b.get("verify", {}).get("note")
+             for b in win._blocks if b.get("verify")]
+    assert "已核对官方文档：B 错" in notes
+    tools = [t for b in win._blocks for t in (b.get("tools") or [])]
+    assert any("检索 官方文档" in str(t) for t in tools)
+    # 回合在跑：重绘出来的「待核实」按钮点了也没用，不许露出来
+    pend = [b for b in win._blocks
+            if b.get("verify", {}).get("kind") == "pending"]
+    assert pend and all(b["verify_btn"].isHidden() for b in pend)

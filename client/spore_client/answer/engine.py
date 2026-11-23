@@ -136,8 +136,26 @@ class AgentEngine:
 
     def is_busy(self) -> bool:
         """**当前会话**的回合在跑（并行回合后不再等于「任何回合在跑」）。"""
-        t = self._workers.get(self.session.id)
+        return self.is_running(self.session.id)
+
+    def is_running(self, sid: str | None) -> bool:
+        """指定会话的回合是否还在跑（切会话/回看时判断「该吃内存态还是库里快照」）。"""
+        t = self._workers.get(sid) if sid else None
         return t is not None and t.is_alive()
+
+    def session_for_article(self, article_id: str | None) -> Session | None:
+        """article id → **仍在跑**的会话对象。
+
+        与 MV3 SW 的 getSession（liveSessions 优先）/ 手机端 CaptureService.liveSession
+        同语义：切走再切回来要读引擎内存里的这份，而不是库里阶段A 的快照 ——
+        否则核实结果与检索小票（只在 turn-end 才全量落库）会凭空消失。
+        """
+        if not article_id:
+            return None
+        for sess in self._sessions.values():
+            if str(sess.backend_id) == str(article_id) and self.is_running(sess.id):
+                return sess
+        return None
 
     def cancel(self):
         """中止**当前会话**的回合（后台别的会话照跑）。"""
@@ -507,8 +525,13 @@ class AgentEngine:
                                 "kind": "verify", "think": answer.verifyThink})
                 return
             if kind == "text" and chunk:
+                # 核实正文同步写回消息对象：切走再切回来时从内存态重绘，
+                # 已经流出来的核实说明不许丢（落库仍在 turn-end 全量覆盖）
+                answer.verifyNote = acc.get("content", "")
+                answer.verifyPending = True
+                answer.verifyRan = False
                 self._emit({"type": "verify-delta", "idx": idx,
-                            "note": acc.get("content", ""), "verdict": ""})
+                            "note": answer.verifyNote, "verdict": ""})
         return on_delta
 
 

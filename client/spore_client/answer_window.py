@@ -1349,8 +1349,16 @@ class AnswerWindow(QWidget):
     def load_history(self, article: dict) -> None:
         """渲染一条历史会话，并收编给引擎——下一条追问在其上接续（§8-2）。
 
+        **该会话的回合还在跑 → 从引擎内存态重绘**（与 MV3 `getSession` liveSessions
+        优先、手机端 `CaptureService.liveSession` 同语义）：库里只有阶段A 快照，
+        核实结果与检索小票要 turn-end 才全量落库，拿库渲染会让它们「切走就没了」。
         引擎正忙时收编失败 → 退回只读（与旧行为一致），不把两场对话串线。
         """
+        live = (self._engine.session_for_article(str(article.get("id") or ""))
+                if self._engine is not None else None)
+        if live is not None:
+            self._show_live(live)
+            return
         self._clear()
         self._current_article_id = str(article.get("id") or "") or None
         self._current_fav = bool(article.get("fav"))
@@ -1373,7 +1381,37 @@ class AnswerWindow(QWidget):
                  self._current_article_id, len(msgs), self._current_fav,
                  adopted)
 
-    def _add_history_msg(self, m: dict) -> None:
+    def _show_live(self, sess: Session) -> None:
+        """切回一个**仍在跑**的会话：整页从引擎内存里的 Session 重绘。
+
+        库里那条只到阶段A（题图+初答），核实流与检索小票都在 sess.messages 上。
+        绑定 `_sess_id = sess.id` 后，后续 delta 继续按同一场事件渲染。
+        """
+        self._clear()
+        self._current_article_id = str(sess.backend_id or "") or None
+        self._current_fav = bool(sess.fav)
+        self._sync_fav_btn()
+        self.title.setText(sess.title or "Spore")
+        shot = sess.image_path or next(
+            (str(m.imagePath) for m in reversed(sess.messages)
+             if getattr(m, "imagePath", "")), "")
+        if shot:
+            self._show_shot(shot)
+        self._cur = None
+        for m in sess.messages:
+            self._add_history_msg(m.to_dict(), live_running=True)
+        # 最后一条是 assistant → 后续 delta 续写在**这一块**里，
+        # 不能让 answer-delta 的 `_cur is None` 分支再新开一块（内容重复）
+        if sess.messages and sess.messages[-1].role == "assistant" and self._blocks:
+            self._cur = self._blocks[-1]
+        self._sess_id = sess.id   # 只认这一场的后续事件
+        self._set_status(sess.status, "")
+        self.show_fade()
+        LOG.info("live session bound id=%s article=%s msgs=%d status=%s",
+                 sess.id, self._current_article_id, len(sess.messages),
+                 sess.status)
+
+    def _add_history_msg(self, m: dict, live_running: bool = False) -> None:
         if not isinstance(m, dict):
             return
         if m.get("role") == "user":
@@ -1405,8 +1443,9 @@ class AnswerWindow(QWidget):
             blk["verify"] = {"kind": vk, "note": m.get("verifyNote") or "",
                              "done": True}
             self._paint_verify(blk)
-            if vk == "pending":
-                # 历史视图也要能点核实（2026-10-03 反馈：关自动核实后没按钮）
+            if vk == "pending" and not live_running:
+                # 历史视图也要能点核实（2026-10-03 反馈：关自动核实后没按钮）；
+                # 但「正在跑」的会话由引擎自己核实，重绘时别给一个点了没用的按钮
                 blk["verify_btn"].setVisible(True)
         self._paint(blk)
 
